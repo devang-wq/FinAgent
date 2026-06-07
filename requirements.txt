@@ -69,6 +69,7 @@ opentelemetry-instrumentation-logging==0.50b0
 # Resilience
 aiobreaker==1.1.0
 aiolimiter==1.1.0
+slowapi==0.1.9
 
 # Eval — see requirements-eval.txt (not installed in API/worker image)
 
