@@ -4,8 +4,12 @@ Downloads the ICIJ Offshore Leaks bulk CSV (Panama Papers, Paradise Papers,
 Pandora Papers) and converts graph records into synthetic narrative documents
 suitable for vector indexing.
 
-The CSV archive is ~250 MB. It is downloaded once and cached at
-ICIJ_DATA_DIR (default: /tmp/icij).
+The CSV archive is ~250 MB and is cached at ICIJ_DATA_DIR (default: /tmp/icij).
+
+Document types produced:
+  - Offshore entities   (shell companies, trusts, foundations)
+  - Officers            (individuals with offshore holdings)
+  - Intermediaries      (law firms, agents who set up structures)
 """
 from __future__ import annotations
 
@@ -17,98 +21,115 @@ from pathlib import Path
 
 import aiohttp
 
-_BULK_URL = "https://offshoreleaks-data.icij.org/offshoreleaks/csv/full-oldb.LATEST.zip"
+_BULK_URL  = "https://offshoreleaks-data.icij.org/offshoreleaks/csv/full-oldb.LATEST.zip"
 _CACHE_DIR = Path(os.getenv("ICIJ_DATA_DIR", "/tmp/icij"))
 
-# CSV files inside the zip
-_ENTITIES_CSV = "nodes-entities.csv"
-_OFFICERS_CSV = "nodes-officers.csv"
-_EDGES_CSV    = "relationships.csv"
+_ENTITIES_CSV       = "nodes-entities.csv"
+_OFFICERS_CSV       = "nodes-officers.csv"
+_INTERMEDIARIES_CSV = "nodes-intermediaries.csv"
+_EDGES_CSV          = "relationships.csv"
 
 
 async def fetch_icij_documents(max_docs: int = 5_000) -> list[dict]:
     await _ensure_downloaded()
 
-    entities  = _load_csv(_CACHE_DIR / _ENTITIES_CSV)
-    officers  = _load_csv(_CACHE_DIR / _OFFICERS_CSV)
-    edges     = _load_csv(_CACHE_DIR / _EDGES_CSV)
+    entities      = _load_csv(_CACHE_DIR / _ENTITIES_CSV)
+    officers      = _load_csv(_CACHE_DIR / _OFFICERS_CSV)
+    intermediaries = _load_csv(_CACHE_DIR / _INTERMEDIARIES_CSV)
+    edges         = _load_csv(_CACHE_DIR / _EDGES_CSV)
 
-    # Build a quick lookup: node_id → name
+    # node_id → name lookup
     name_map: dict[str, str] = {}
-    for row in entities + officers:
-        nid = row.get("node_id") or row.get("id", "")
+    for row in entities + officers + intermediaries:
+        nid  = row.get("node_id") or row.get("id", "")
         name = row.get("name", "")
         if nid and name:
             name_map[nid] = name
 
-    # Build adjacency for officers (persons who own/control entities)
-    officer_connections: dict[str, list[str]] = {}
+    # officer/intermediary → list of "REL_TYPE → target_name" strings
+    connections: dict[str, list[str]] = {}
     for edge in edges:
         src = edge.get("START_ID", "") or edge.get("_start", "")
-        dst = edge.get("END_ID", "") or edge.get("_end", "")
-        rel = edge.get("TYPE", "") or edge.get("type", "")
+        dst = edge.get("END_ID", "")   or edge.get("_end", "")
+        rel = edge.get("TYPE", "")     or edge.get("type", "")
         if src in name_map and dst in name_map:
-            officer_connections.setdefault(src, []).append(
-                f"{rel} → {name_map[dst]}"
-            )
+            connections.setdefault(src, []).append(f"{rel} → {name_map[dst]}")
+
+    # Allocate budget across three node types
+    entity_cap       = max_docs // 2
+    officer_cap      = max_docs // 3
+    intermediary_cap = max_docs - entity_cap - officer_cap
 
     docs: list[dict] = []
 
-    # Entity documents
-    for row in entities[:max_docs // 2]:
-        nid   = row.get("node_id") or row.get("id", "")
-        name  = row.get("name", "")
-        juri  = row.get("jurisdiction", "") or row.get("jurisdiction_description", "")
-        incorp = row.get("incorporation_date", "")
-        status = row.get("status", "")
-        source = row.get("sourceID", "ICIJ")
-
+    # ── Entities ───────────────────────────────────────────────────────────
+    for row in entities[:entity_cap]:
+        nid    = row.get("node_id") or row.get("id", "")
+        name   = row.get("name", "")
         if not name:
             continue
-
-        connections = officer_connections.get(nid, [])
-        conn_text = "\n".join(f"  - {c}" for c in connections[:10])
-
-        text = (
-            f"Offshore entity: {name}\n"
-            f"Jurisdiction: {juri}\n"
-            f"Incorporation date: {incorp}\n"
-            f"Status: {status}\n"
-            f"Leak source: {source}\n"
-            f"Connections:\n{conn_text}"
-        ).strip()
-
+        juri   = row.get("jurisdiction", "") or row.get("jurisdiction_description", "")
+        incorp = row.get("incorporation_date", "")
+        status = row.get("status", "")
+        src    = row.get("sourceID", "ICIJ")
+        conn_text = "\n".join(f"  - {c}" for c in connections.get(nid, [])[:10])
         docs.append({
-            "document_id": f"icij:entity:{nid}",
-            "title": f"Offshore entity — {name}",
-            "author": source,           # "Panama Papers", "Pandora Papers", etc.
-            "jurisdiction": juri,       # country/territory from CSV
-            "text": text,
-            "date": incorp[:10] if incorp else "",
+            "document_id":  f"icij:entity:{nid}",
+            "title":        f"Offshore entity — {name}",
+            "text": (
+                f"Offshore entity: {name}\n"
+                f"Jurisdiction: {juri}\n"
+                f"Incorporation date: {incorp}\n"
+                f"Status: {status}\n"
+                f"Leak source: {src}\n"
+                f"Connections:\n{conn_text}"
+            ),
+            "author":       src,
+            "jurisdiction": juri,
+            "date":         incorp[:10] if incorp else "",
         })
 
-    # Officer documents (persons with offshore holdings)
-    for row in officers[: max_docs - len(docs)]:
+    # ── Officers ───────────────────────────────────────────────────────────
+    for row in officers[:officer_cap]:
         nid  = row.get("node_id") or row.get("id", "")
         name = row.get("name", "")
         if not name:
             continue
-
-        connections = officer_connections.get(nid, [])
-        conn_text = "\n".join(f"  - {c}" for c in connections[:10])
-
-        text = (
-            f"Individual with offshore connections: {name}\n"
-            f"Connections:\n{conn_text}"
-        ).strip()
-
+        conn_text = "\n".join(f"  - {c}" for c in connections.get(nid, [])[:10])
         countries = row.get("countries", "") or row.get("country_codes", "")
         docs.append({
-            "document_id": f"icij:officer:{nid}",
-            "title": f"Individual — {name}",
+            "document_id":  f"icij:officer:{nid}",
+            "title":        f"Individual — {name}",
+            "text": (
+                f"Individual with offshore connections: {name}\n"
+                f"Countries: {countries}\n"
+                f"Connections:\n{conn_text}"
+            ),
             "jurisdiction": countries,
-            "text": text,
-            "date": "",
+            "date":         "",
+        })
+
+    # ── Intermediaries ─────────────────────────────────────────────────────
+    for row in intermediaries[:intermediary_cap]:
+        nid    = row.get("node_id") or row.get("id", "")
+        name   = row.get("name", "")
+        if not name:
+            continue
+        juri   = row.get("jurisdiction", "") or row.get("country_codes", "")
+        src    = row.get("sourceID", "ICIJ")
+        conn_text = "\n".join(f"  - {c}" for c in connections.get(nid, [])[:10])
+        docs.append({
+            "document_id":  f"icij:intermediary:{nid}",
+            "title":        f"Intermediary — {name}",
+            "text": (
+                f"Offshore intermediary (law firm / agent / provider): {name}\n"
+                f"Jurisdiction: {juri}\n"
+                f"Leak source: {src}\n"
+                f"Clients / structures set up:\n{conn_text}"
+            ),
+            "author":       src,
+            "jurisdiction": juri,
+            "date":         "",
         })
 
     return docs[:max_docs]
@@ -138,14 +159,13 @@ async def _ensure_downloaded() -> None:
                 async for chunk in resp.content.iter_chunked(65536):
                     fh.write(chunk)
 
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            for name in zf.namelist():
-                if any(name.endswith(f) for f in [_ENTITIES_CSV, _OFFICERS_CSV, _EDGES_CSV]):
-                    target = _CACHE_DIR / Path(name).name
-                    target.write_bytes(zf.read(name))
-    finally:
-        zip_path.unlink(missing_ok=True)
+    _WANTED = {_ENTITIES_CSV, _OFFICERS_CSV, _INTERMEDIARIES_CSV, _EDGES_CSV}
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            if Path(name).name in _WANTED:
+                (_CACHE_DIR / Path(name).name).write_bytes(zf.read(name))
+
+    zip_path.unlink(missing_ok=True)
     print("ICIJ data cached.")
 
 

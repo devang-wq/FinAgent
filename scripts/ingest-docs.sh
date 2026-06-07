@@ -4,7 +4,14 @@
 # and indexes them into the OpenSearch vector store.
 #
 # Sources: SEC EDGAR, CourtListener, ICIJ Offshore Leaks, USASpending, GDELT
-# Estimated time: 20-40 minutes | Estimated index size: ~80-100 MB
+#
+# Modes:
+#   (default / --small)  ~4 500 docs   20-40 min   ~80-100 MB index
+#   --full               ~50 000 docs  2-4 h        ~1-2 GB index
+#
+# Usage:
+#   bash scripts/ingest-docs.sh           # small mode
+#   bash scripts/ingest-docs.sh --full    # full mode
 #
 # Ingestion is idempotent — already-indexed document IDs are skipped via
 # Redis checkpoints. Safe to re-run to pick up new documents.
@@ -17,6 +24,17 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
+INGEST_MODE="${INGEST_MODE:-small}"
+
+for arg in "$@"; do
+    case "$arg" in
+        --full)  INGEST_MODE=full  ;;
+        --small) INGEST_MODE=small ;;
+    esac
+done
+
+export INGEST_MODE
+
 step "Checking required services"
 
 for svc in redis-stack opensearch litellm; do
@@ -27,9 +45,13 @@ for svc in redis-stack opensearch litellm; do
     fi
 done
 
-step "Running document ingestor"
-warn "Fetching from 5 sources in parallel — this takes 20-40 minutes."
-docker compose run --rm doc-ingestor
+step "Running document ingestor (mode: ${INGEST_MODE})"
+if [ "$INGEST_MODE" = "full" ]; then
+    warn "FULL mode — fetching ~50 000 docs. Estimated time: 2-4 hours."
+else
+    warn "SMALL mode — fetching ~4 500 docs. Estimated time: 20-40 minutes."
+fi
+docker compose run --rm -e INGEST_MODE="${INGEST_MODE}" doc-ingestor
 
 step "Verifying index"
 info "Document count in fintech-docs:"
