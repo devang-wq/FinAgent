@@ -9,13 +9,14 @@ Runs the full eval loop:
 Usage:
   python -m eval.runner                      # all cases
   python -m eval.runner --tag sanctions      # cases tagged 'sanctions'
-  python -m eval.runner --tag hallucination_trap --api http://localhost:8000
+  python -m eval.runner --tag hallucination_trap --api http://api:8000
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
+import os
 
 import httpx
 
@@ -128,8 +129,8 @@ def main() -> None:
     parser.add_argument("--tag", default=None, help="Filter cases by tag (e.g. 'sanctions')")
     parser.add_argument(
         "--api",
-        default="http://localhost:8000",
-        help="FinAgent API base URL (default: http://localhost:8000)",
+        default=os.environ.get("FINAGENT_API_BASE", "http://localhost:8000"),
+        help="FinAgent API base URL (default: $FINAGENT_API_BASE or http://localhost:8000)",
     )
     args = parser.parse_args()
     asyncio.run(run_eval(tag_filter=args.tag, api_base=args.api))
