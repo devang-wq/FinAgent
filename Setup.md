@@ -226,12 +226,13 @@ Docker.
 open http://localhost:3100
 ```
 
-Two custom dashboards are pre-provisioned:
+Three custom dashboards are pre-provisioned from `resources/grafana/dashboards/`:
 
 | Dashboard | URL path | What it shows |
 | --- | --- | --- |
-| FinAgent — Overview | `/d/finagent-overview` | LLM / embed / graph latency, ingest rate, circuit breaker events |
-| FinAgent — Evals | `/d/finagent-evals` | RAGAS scores, hallucination rate, per-run history |
+| FinAgent — Request Flow | `/d/finagent-flow` | Query → graph → vector → LLM stages; Tempo traces; tool call distribution |
+| FinAgent — Retrieval Quality | `/d/finagent-retrieval` | HRT metrics: entity resolution rate, latency p50/p95/p99, circuit breakers |
+| FinAgent — Evals | `/d/finagent-evals` | RAGAS faithfulness/relevancy/precision/recall + hallucination rate trend |
 
 ---
 

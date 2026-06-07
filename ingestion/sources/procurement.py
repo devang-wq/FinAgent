@@ -107,12 +107,14 @@ async def _search(
             f"Keyword match: {keyword}"
         ).strip()
 
+        state = award.get("Place of Performance State Code", "")
         docs.append({
             "document_id": f"procurement:{award_id}",
             "title": f"{recipient} — {agency}",
+            "author": agency,
+            "jurisdiction": state or "US",
             "text": text,
             "date": start[:10] if start else "",
-            "source": "procurement",
         })
 
     return docs

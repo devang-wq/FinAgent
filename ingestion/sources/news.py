@@ -80,9 +80,11 @@ async def _query_gdelt(
 
     fetch_tasks = []
     for art in articles:
-        url   = art.get("url", "")
-        title = art.get("title", "")
-        date  = art.get("seendate", "")[:8]  # YYYYMMDD
+        url    = art.get("url", "")
+        title  = art.get("title", "")
+        domain = art.get("domain", "")
+        country = art.get("sourcecountry", "")
+        date   = art.get("seendate", "")[:8]  # YYYYMMDD
         if date and len(date) == 8:
             date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
@@ -90,21 +92,24 @@ async def _query_gdelt(
             continue
 
         if _FETCH_FULL_TEXT:
-            fetch_tasks.append((url, title, date, query))
+            fetch_tasks.append((url, title, date, domain, country, query))
         else:
             # Use title + query as document text (fast path)
             text = f"{title}\n\nRelated to: {query}\nSource: {url}"
             docs.append({
                 "document_id": f"news:{_url_id(url)}",
                 "title": title,
+                "author": domain,
+                "jurisdiction": country,
+                "url": url,
                 "text": text,
                 "date": date,
-                "source": "news",
             })
 
     if _FETCH_FULL_TEXT and fetch_tasks:
         results = await asyncio.gather(
-            *[_fetch_article(session, url, title, date, q) for url, title, date, q in fetch_tasks],
+            *[_fetch_article(session, url, title, date, domain, country, q)
+              for url, title, date, domain, country, q in fetch_tasks],
             return_exceptions=True,
         )
         docs.extend(r for r in results if isinstance(r, dict) and r.get("text"))
@@ -117,6 +122,8 @@ async def _fetch_article(
     url: str,
     title: str,
     date: str,
+    author: str,
+    jurisdiction: str,
     query: str,
 ) -> dict | None:
     async with _RATE:
@@ -138,9 +145,11 @@ async def _fetch_article(
     return {
         "document_id": f"news:{_url_id(url)}",
         "title": title,
+        "author": author,
+        "jurisdiction": jurisdiction,
+        "url": url,
         "text": text,
         "date": date,
-        "source": "news",
     }
 
 

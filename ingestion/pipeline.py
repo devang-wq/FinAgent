@@ -53,7 +53,10 @@ class IngestionPipeline:
             text: str
             document_id: str  (optional — generated if absent)
             title: str        (optional)
+            author: str       (optional — company name, court, publication)
+            jurisdiction: str (optional — country code, US state, court circuit)
             date: str         (optional ISO date)
+            url: str          (optional — canonical source URL)
 
         Returns the number of chunks indexed.
         """
@@ -75,7 +78,11 @@ class IngestionPipeline:
                     "source": source_name,
                     "doc_type": "source",
                     "title": doc.get("title", ""),
+                    "author": doc.get("author", ""),
+                    "jurisdiction": doc.get("jurisdiction", ""),
                     "date": doc.get("date", datetime.utcnow().strftime("%Y-%m-%d")),
+                    "doc_length": len(doc.get("text", "")),
+                    "url": doc.get("url", ""),
                 },
             )
 

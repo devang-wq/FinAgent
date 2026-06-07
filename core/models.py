@@ -20,6 +20,15 @@ class Relationship(BaseModel):
 class Document(BaseModel):
     id: str
     text: str
+    # provenance
+    source: Optional[str] = None        # "sec_edgar" | "courtlistener" | "icij" | "procurement" | "news"
+    title: Optional[str] = None         # filing name, case name, article headline
+    author: Optional[str] = None        # company, court, publication domain
+    jurisdiction: Optional[str] = None  # country code, US state, court circuit
+    date: Optional[str] = None          # ISO-8601 date of original document
+    doc_length: int = 0                 # character count of full original document (pre-chunking)
+    url: Optional[str] = None           # canonical URL of the source document
+    # retrieval
     entity_ids: list[str] = []
     score: Optional[float] = None
 

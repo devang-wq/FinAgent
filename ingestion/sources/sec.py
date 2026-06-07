@@ -39,7 +39,7 @@ async def fetch_sec_filings(
     start = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     end = datetime.utcnow().strftime("%Y-%m-%d")
 
-    filing_urls: list[tuple[str, str, str]] = []  # (url, title, date)
+    filing_urls: list[tuple[str, str, str, str]] = []  # (url, title, date, author)
 
     async with aiohttp.ClientSession(
         headers={"User-Agent": settings.sec_user_agent}
@@ -50,9 +50,9 @@ async def fetch_sec_filings(
             hits = await _search(session, term, start, end)
             filing_urls.extend(hits)
 
-        filing_urls = list({u: (u, t, d) for u, t, d in filing_urls}.values())[:max_docs]
+        filing_urls = list({u: (u, t, d, a) for u, t, d, a in filing_urls}.values())[:max_docs]
 
-        tasks = [_fetch_filing(session, url, title, date) for url, title, date in filing_urls]
+        tasks = [_fetch_filing(session, url, title, date, author) for url, title, date, author in filing_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     docs = [r for r in results if isinstance(r, dict) and r.get("text")]
@@ -64,7 +64,7 @@ async def _search(
     query: str,
     start: str,
     end: str,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     params = {
         "q": f'"{query}"',
         "dateRange": "custom",
@@ -95,7 +95,7 @@ async def _search(
         if accession and cik:
             url = f"{_FILING_URL}/Archives/edgar/data/{int(cik)}/{accession}-index.htm"
             title = f"{entity} {form} {file_date}"
-            results.append((url, title, file_date))
+            results.append((url, title, file_date, entity))
     return results
 
 
@@ -104,6 +104,7 @@ async def _fetch_filing(
     index_url: str,
     title: str,
     date: str,
+    author: str = "",
 ) -> dict | None:
     async with _RATE:
         try:
@@ -142,9 +143,11 @@ async def _fetch_filing(
     return {
         "document_id": f"sec:{index_url.split('/')[-1]}",
         "title": title,
+        "author": author,
+        "jurisdiction": "US",
+        "url": index_url,
         "text": text,
         "date": date,
-        "source": "sec",
     }
 
 

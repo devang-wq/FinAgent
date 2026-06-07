@@ -29,11 +29,11 @@ opensearch-py==2.7.1
 
 # LLM gateway — all model calls route through LiteLLM proxy via HTTP
 # The LiteLLM server runs as a separate Docker container; no SDK import needed.
-openai==1.57.0
+openai>=1.59.0
 
 # Agent framework (replaces LangChain / LangGraph)
-pydantic-ai==0.0.15
-griffe>=0.38.0          # pydantic-ai imports _griffe; not always pulled transitively
+# 0.0.15 had a griffe import bug (_griffe removed in griffe 1.0); upgrade to fix it
+pydantic-ai>=0.0.20
 
 # NLP — spaCy base (fast, broad NER)
 spacy==3.8.3
@@ -70,10 +70,7 @@ opentelemetry-instrumentation-logging==0.50b0
 aiobreaker==1.1.0
 aiolimiter==1.1.0
 
-# Eval — RAGAS metrics (faithfulness, relevancy, precision, recall)
-ragas>=0.1.19,<0.2.0
-langchain-openai>=0.1.0,<0.3.0
-datasets>=2.14.0
+# Eval — see requirements-eval.txt (not installed in API/worker image)
 
 # Utilities
 python-dateutil==2.9.0.post0

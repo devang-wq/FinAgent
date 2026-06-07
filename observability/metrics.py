@@ -61,11 +61,32 @@ graph_query_duration = _meter.create_histogram(
     unit="s",
 )
 
-# ── Search ────────────────────────────────────────────────────────────────
+# ── Search / Retrieval ────────────────────────────────────────────────────
 search_duration = _meter.create_histogram(
     "finagent.search.duration_seconds",
     description="Hybrid search latency (entity resolution + graph expansion + KNN)",
     unit="s",
+)
+entities_per_query = _meter.create_histogram(
+    "finagent.retrieval.entities_per_query",
+    description="Entities resolved per search query",
+    unit="entities",
+)
+docs_per_query = _meter.create_histogram(
+    "finagent.retrieval.docs_per_query",
+    description="Documents returned per search query",
+    unit="docs",
+)
+graph_hits_per_query = _meter.create_histogram(
+    "finagent.retrieval.graph_hits_per_query",
+    description="Entity IDs pulled from graph expansion per query",
+    unit="ids",
+)
+
+# ── Agent tool calls ──────────────────────────────────────────────────────
+tool_calls_total = _meter.create_counter(
+    "finagent.agent.tool_calls_total",
+    description="Tool invocations by tool name",
 )
 
 # ── Circuit breakers ──────────────────────────────────────────────────────

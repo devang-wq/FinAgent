@@ -99,12 +99,22 @@ async def _fetch_opinion(session: aiohttp.ClientSession, opinion_id: int) -> dic
     text = re.sub(r"\s{2,}", " ", text).strip()[:60_000]
 
     cluster = data.get("cluster", {})
-    date_filed = cluster.get("date_filed") if isinstance(cluster, dict) else ""
+    cluster_dict = cluster if isinstance(cluster, dict) else {}
+    date_filed = cluster_dict.get("date_filed", "")
+    case_name = cluster_dict.get("case_name", "") or f"Court Opinion {opinion_id}"
+    court_id = (
+        cluster_dict.get("court_id")
+        or cluster_dict.get("court", "")
+        or data.get("court_id", "")
+        or ""
+    )
 
     return {
         "document_id": f"court:{opinion_id}",
-        "title": f"Court Opinion {opinion_id}",
+        "title": case_name,
+        "author": court_id,
+        "jurisdiction": court_id,
+        "url": f"https://www.courtlistener.com/opinion/{opinion_id}/",
         "text": text,
         "date": date_filed or "",
-        "source": "courtlistener",
     }

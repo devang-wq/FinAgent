@@ -98,8 +98,8 @@
     # Pulls chat model + embedding model; both are needed before the API starts.
     entrypoint: >
       /bin/sh -c "
-      echo '=== Pulling chat model: qwen3:30b-a3b ===' &&
-      ollama pull qwen3:30b-a3b &&
+      echo '=== Pulling primary chat model: qwen3:8b ===' &&
+      ollama pull qwen3:8b &&
       echo '=== Pulling fallback: gemma3:12b ===' &&
       ollama pull gemma3:12b &&
       echo '=== Pulling embedding model: nomic-embed-text ===' &&
@@ -129,6 +129,9 @@
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OLLAMA_API_BASE=http://ollama:11434
+      # OTel callback — sends every proxied LLM request as a span to Tempo
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4317
+      - OTEL_SERVICE_NAME=finagent-litellm
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/')\""]
       interval: 10s
@@ -214,6 +217,7 @@
     volumes:
       - grafana_data:/data
       - ./resources/grafana/dashboards:/otel-lgtm/grafana/dashboards/finagent
+      - ./resources/grafana/provisioning/dashboards/finagent.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/finagent.yaml
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
@@ -244,7 +248,7 @@
       OPENSEARCH_PORT: 9200
       LITELLM_BASE_URL: http://litellm:4000/v1
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY}
-      PRIMARY_MODEL: ${PRIMARY_MODEL:-qwen3-30b-a3b}
+      PRIMARY_MODEL: ${PRIMARY_MODEL:-qwen3-8b}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       OTEL_ENDPOINT: http://otel-lgtm:4317
@@ -255,7 +259,7 @@
   eval-runner:
     build:
       context: .
-      dockerfile: docker/Dockerfile.api
+      dockerfile: docker/Dockerfile.eval
     container_name: finagent-eval-runner
     depends_on:
       api:
@@ -265,7 +269,7 @@
     environment:
       LITELLM_BASE_URL: http://litellm:4000/v1
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY}
-      PRIMARY_MODEL: ${PRIMARY_MODEL:-qwen3-30b-a3b}
+      PRIMARY_MODEL: ${PRIMARY_MODEL:-qwen3-8b}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       FINAGENT_API_BASE: http://api:8000
       OTEL_ENDPOINT: http://otel-lgtm:4317

@@ -81,9 +81,10 @@ async def fetch_icij_documents(max_docs: int = 5_000) -> list[dict]:
         docs.append({
             "document_id": f"icij:entity:{nid}",
             "title": f"Offshore entity — {name}",
+            "author": source,           # "Panama Papers", "Pandora Papers", etc.
+            "jurisdiction": juri,       # country/territory from CSV
             "text": text,
             "date": incorp[:10] if incorp else "",
-            "source": "icij",
         })
 
     # Officer documents (persons with offshore holdings)
@@ -101,12 +102,13 @@ async def fetch_icij_documents(max_docs: int = 5_000) -> list[dict]:
             f"Connections:\n{conn_text}"
         ).strip()
 
+        countries = row.get("countries", "") or row.get("country_codes", "")
         docs.append({
             "document_id": f"icij:officer:{nid}",
             "title": f"Individual — {name}",
+            "jurisdiction": countries,
             "text": text,
             "date": "",
-            "source": "icij",
         })
 
     return docs[:max_docs]

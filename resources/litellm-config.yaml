@@ -4,17 +4,24 @@ model_list:
   # LOCAL (FREE) — Ollama
   # ==========================================================================
 
-  # Primary: Qwen3-30B-A3B — MoE, 3B active params, score 63.7, Apache 2.0
-  # RTX 4060 8 GB: ~8 GB VRAM + ~22 GB RAM offload; fast inference due to MoE.
-  - model_name: qwen3-30b-a3b
+  # Primary: Qwen3-8B — dense 8B, fits fully in 8 GB VRAM, no CPU offload.
+  # ~5× faster than 30b-a3b for tool-calling tasks; all 8B params are active
+  # unlike the MoE variant which offloads 27 GB to RAM over PCIe.
+  - model_name: qwen3-8b
     litellm_params:
-      model: ollama/qwen3:30b-a3b
+      model: ollama/qwen3:8b
       api_base: http://ollama:11434
 
-  # Fallback: Gemma-3-12B — fits fully in 8 GB VRAM at Q3_K_M, score 58.6
+  # Fallback: Gemma-3-12B — also fits in 8 GB VRAM at Q3_K_M
   - model_name: gemma3-12b
     litellm_params:
       model: ollama/gemma3:12b
+      api_base: http://ollama:11434
+
+  # Heavy option: 30B MoE — keep available but not default (22 GB RAM offload)
+  - model_name: qwen3-30b-a3b
+    litellm_params:
+      model: ollama/qwen3:30b-a3b
       api_base: http://ollama:11434
 
   # Embeddings: nomic-embed-text — local, 768-dim, no API key needed
@@ -25,6 +32,8 @@ model_list:
 
   # ==========================================================================
   # PAID / CLOUD — Anthropic (uncomment when ANTHROPIC_API_KEY is set)
+  # If you want maximum speed + accuracy without GPU constraints, claude-haiku
+  # is sub-second TTFT and outperforms any local 8B on compliance tasks.
   # ==========================================================================
 
   # - model_name: claude-haiku
@@ -43,8 +52,10 @@ model_list:
 # ==========================================================================
 router_settings:
   fallbacks:
-    - qwen3-30b-a3b:
+    - qwen3-8b:
         - gemma3-12b
+    - qwen3-30b-a3b:       # OOM fallback — routes to 8B when RAM < 18 GB
+        - qwen3-8b
 
 
 # ==========================================================================
@@ -52,7 +63,10 @@ router_settings:
 # ==========================================================================
 litellm_settings:
   drop_params: true
+  success_callback: ["otel"]
+  failure_callback: ["otel"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   set_verbose: false
+  ui_access_mode: all
