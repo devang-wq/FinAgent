@@ -102,8 +102,8 @@
         set -e
         echo '=== Pulling primary chat model: qwen3:8b ==='
         ollama pull qwen3:8b
-        echo '=== Pulling fallback: gemma3:12b ==='
-        ollama pull gemma3:12b
+        echo '=== Pulling fallback chat model: qwen3:4b ==='
+        ollama pull qwen3:4b
         echo '=== Pulling embedding model: nomic-embed-text ==='
         ollama pull nomic-embed-text
         echo '=== All models ready ==='

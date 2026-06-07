@@ -1,31 +1,17 @@
 model_list:
 
-  # ==========================================================================
-  # LOCAL (FREE) — Ollama
-  # ==========================================================================
-
-  # Primary: Qwen3-8B — dense 8B, fits fully in 8 GB VRAM, no CPU offload.
-  # ~5× faster than 30b-a3b for tool-calling tasks; all 8B params are active
-  # unlike the MoE variant which offloads 27 GB to RAM over PCIe.
+  # PRIMARY: Qwen3-8B — dense 8B, fits fully in 8 GB VRAM, Apache 2.0
   - model_name: qwen3-8b
     litellm_params:
       model: ollama/qwen3:8b
       api_base: http://ollama:11434
-      # Disable Qwen3 extended chain-of-thought thinking mode.
-      # Without this, a single compliance answer takes 6–9 minutes.
       extra_body:
         think: false
 
-  # Fallback: Gemma-3-12B — also fits in 8 GB VRAM at Q3_K_M
-  - model_name: gemma3-12b
+  # FALLBACK: Qwen3-4B — ~3 GB VRAM; used when 8B is OOM or unavailable
+  - model_name: qwen3-4b
     litellm_params:
-      model: ollama/gemma3:12b
-      api_base: http://ollama:11434
-
-  # Heavy option: 30B MoE — keep available but not default (22 GB RAM offload)
-  - model_name: qwen3-30b-a3b
-    litellm_params:
-      model: ollama/qwen3:30b-a3b
+      model: ollama/qwen3:4b
       api_base: http://ollama:11434
       extra_body:
         think: false
@@ -36,11 +22,10 @@ model_list:
       model: ollama/nomic-embed-text
       api_base: http://ollama:11434
 
-  # ==========================================================================
-  # PAID / CLOUD — Anthropic (uncomment when ANTHROPIC_API_KEY is set)
-  # If you want maximum speed + accuracy without GPU constraints, claude-haiku
-  # is sub-second TTFT and outperforms any local 8B on compliance tasks.
-  # ==========================================================================
+
+# ==========================================================================
+# PAID / CLOUD — Anthropic (uncomment when ANTHROPIC_API_KEY is set)
+# ==========================================================================
 
   # - model_name: claude-haiku
   #   litellm_params:
@@ -59,9 +44,7 @@ model_list:
 router_settings:
   fallbacks:
     - qwen3-8b:
-        - gemma3-12b
-    - qwen3-30b-a3b:       # OOM fallback — routes to 8B when RAM < 18 GB
-        - qwen3-8b
+        - qwen3-4b
 
 
 # ==========================================================================
