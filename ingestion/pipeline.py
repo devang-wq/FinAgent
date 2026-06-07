@@ -24,9 +24,11 @@ from observability.tracing import get_tracer
 from vector.embeddings import embed
 from vector.index_setup import create_fintech_index
 
-EMBED_BATCH_SIZE = 128
-MAX_CONCURRENT = 32
 _CHECKPOINT_KEY = "ingestion:checkpoints"
+
+# Defaults — overridden per-mode via constructor args
+_DEFAULT_EMBED_BATCH = 128
+_DEFAULT_MAX_CONCURRENT = 32
 
 
 class IngestionPipeline:
@@ -35,11 +37,14 @@ class IngestionPipeline:
         redis_client: Redis,
         os_client: OpenSearch,
         enricher: EntityEnricher,
+        embed_batch_size: int = _DEFAULT_EMBED_BATCH,
+        max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
     ):
         self.redis = redis_client
         self.os = os_client
         self.enricher = enricher
-        self._sem = asyncio.Semaphore(MAX_CONCURRENT)
+        self._embed_batch_size = embed_batch_size
+        self._sem = asyncio.Semaphore(max_concurrent)
 
     async def run_source(
         self,
@@ -93,7 +98,7 @@ class IngestionPipeline:
 
             self._mark_done(source_name, doc_id)
 
-            if len(pending_docs) >= EMBED_BATCH_SIZE:
+            if len(pending_docs) >= self._embed_batch_size:
                 await self._flush(pending_docs)
                 chunks_indexed += len(pending_docs)
                 pending_docs = []
