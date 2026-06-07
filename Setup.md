@@ -1,268 +1,408 @@
 # FinAgent — Setup Guide
 
-## Operation Types
-
-| Operation | When to run |
-| --- | --- |
-| **First-time setup** | Once on a new machine or after a full teardown (`down -v`) |
-| **Pull LLM models** | Once — models persist in the `ollama_data` volume |
-| **Sanctions ingest** | Once, then only to refresh the OpenSanctions dataset |
-| **Document ingest** | Once for the initial corpus, then periodically (weekly/monthly) |
-| **Start the stack** | Every time you want to run FinAgent |
-
----
-
 ## Prerequisites
 
 | Requirement | Minimum | Notes |
 | --- | --- | --- |
 | Docker Desktop | 4.x | Enable WSL 2 backend on Windows |
 | Docker Compose | v2 (`docker compose`) | Included with Docker Desktop |
-| RAM | 16 GB | 24 GB recommended for qwen3:30b-a3b |
-| Disk | 40 GB free | Models ~27 GB + data volumes ~5 GB |
+| RAM | 16 GB | 24 GB recommended |
+| Disk | 20 GB free | Models ~5 GB + data volumes ~5 GB |
 | GPU | Optional | Ollama uses CPU if no CUDA GPU is detected |
 
 ---
 
-## Scripts
-
-All operational scripts live in `scripts/`. Make them executable once:
-
-```bash
-chmod +x scripts/*.sh
-```
-
-| Script | Purpose |
-| --- | --- |
-| `scripts/setup.sh` | **First-time setup** — builds images, starts services, pulls models, runs both ingestors |
-| `scripts/start.sh` | **Regular startup** — full stack, skips one-shot containers |
-| `scripts/stop.sh` | Stop services (`--reset` to wipe volumes, `--chat` / `--api` for partial stop) |
-| `scripts/start-chat.sh` | Chat UI only — WebUI + LiteLLM + Ollama (no compliance tools) |
-| `scripts/start-api.sh` | API + backend — compliance API without the chat UI |
-| `scripts/start-infra.sh` | Infrastructure only — data stores + Ollama, no app layer |
-| `scripts/pull-models.sh` | Pull Ollama models (`--embed-only` for nomic-embed-text only) |
-| `scripts/ingest-sanctions.sh` | Run the OpenSanctions → FalkorDB pipeline |
-| `scripts/ingest-docs.sh` | Run the 5-source → OpenSearch pipeline |
-| `scripts/ingest-all.sh` | Run both pipelines in order (`--sanctions-only` / `--docs-only` flags) |
-
----
-
-## Service Groups
-
-| Group | Services included | Use when |
-| --- | --- | --- |
-| **Chat only** | postgres, ollama, litellm, open-webui | You just want to chat with local LLMs |
-| **API + backend** | + redis-stack, opensearch, litellm, api, dashboards | You need the compliance agent and API |
-| **Full stack** | All of the above + open-webui | Day-to-day use |
-| **Infra only** | redis-stack, opensearch, postgres, ollama | Developing locally or running ingestors |
-
----
-
-## First-Time Setup
-
-### Quick path (automated)
-
-```bash
-cp .env.example .env
-# Edit .env — set SEC_USER_AGENT and WEBUI_ADMIN_PASSWORD at minimum
-bash scripts/setup.sh
-```
-
-`setup.sh` runs all steps below in order. Pass `--skip-ingest` to stop after starting services and run ingestion separately later.
-
----
-
-### Manual steps
-
-#### 1. Create `.env`
+## Environment Setup (one-time)
 
 ```bash
 cp .env.example .env
 ```
 
-Minimum required values:
+Edit `.env` and set at minimum:
 
 ```bash
-LITELLM_MASTER_KEY=sk-finagent-local       # any string — API key for LiteLLM
-WEBUI_ADMIN_PASSWORD=change-me-now         # Open WebUI admin login
-SEC_USER_AGENT=FinAgent/1.0 you@email.com  # SEC requires a real contact email
+LITELLM_MASTER_KEY=sk-finagent-local       # any string — used as bearer token for LiteLLM
+WEBUI_ADMIN_PASSWORD=change-me-now         # Open WebUI admin login password
+SEC_USER_AGENT=FinAgent/1.0 you@email.com  # SEC EDGAR requires a real contact email
 ```
 
-Optional:
+Optional keys that unlock more data:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...       # enables Claude models via LiteLLM
-COURTLISTENER_TOKEN=...            # raises CourtListener API rate limit
+ANTHROPIC_API_KEY=sk-ant-...     # enables Claude models in addition to local Ollama models
+COURTLISTENER_TOKEN=...          # raises CourtListener API rate limit from 100 to 5000 req/day
 ```
 
-#### 2. Build Docker images
+---
+
+## Step 1 — Initialize All Databases and Services
+
+Start the full infrastructure layer: FalkorDB (knowledge graph), OpenSearch (vector store), PostgreSQL (LiteLLM metadata), and Ollama (local LLM runtime).
 
 ```bash
-docker compose build
+docker compose up -d redis-stack opensearch postgres ollama otel-lgtm
 ```
 
-Builds `Dockerfile.api` and `Dockerfile.worker`. The worker image pre-downloads GLiNER model weights (~500 MB) at build time.
-
-> Only needed again if `requirements.txt` or a Dockerfile changes.
-
-#### 3. Start infrastructure
+Wait for all health checks to pass (takes ~60 seconds on first run):
 
 ```bash
-bash scripts/start-infra.sh
+docker compose ps
+# All services should show "healthy"
 ```
 
-Starts FalkorDB, OpenSearch, Postgres, and Ollama. Waits for all health checks.
-
-#### 4. Pull LLM models *(one-time, ~27 GB)*
+Verify each store is reachable:
 
 ```bash
-bash scripts/pull-models.sh
+# FalkorDB / Redis
+docker exec finagent-redis redis-cli ping
+# → PONG
+
+# OpenSearch
+curl -s http://localhost:9200/_cluster/health | grep status
+# → "status":"yellow" or "green"
+
+# PostgreSQL
+docker exec finagent-postgres pg_isready -U litellm
+# → localhost:5432 - accepting connections
+```
+
+---
+
+## Step 2 — Ingest Data and Download Models
+
+This step is **one-time** (data persists in Docker volumes across restarts).
+
+### 2a — Pull Ollama models
+
+```bash
+docker compose run --rm ollama-init
 ```
 
 Downloads into the `ollama_data` volume:
 
-- `qwen3:30b-a3b` — primary chat model (~19 GB)
-- `gemma3:12b` — fallback (~8 GB)
-- `nomic-embed-text` — embeddings (~270 MB)
+| Model | Size | Purpose |
+| --- | --- | --- |
+| `qwen3:4b` | ~3 GB | Primary chat model |
+| `nomic-embed-text` | ~270 MB | 768-dim local embeddings |
 
-> Models persist across restarts. If only the embedding model is missing, use `bash scripts/pull-models.sh --embed-only`.
+> Models survive container restarts. Only re-run this if you wipe the `ollama_data` volume.
 
-#### 5. Start LiteLLM and app services
+### 2b — Start LiteLLM (required before ingestion)
 
 ```bash
 docker compose up -d litellm
-# wait for healthy, then:
-docker compose up -d opensearch-dashboards api open-webui
+docker compose ps litellm   # wait for "healthy"
 ```
 
-#### 6. Ingest sanctions graph *(one-time, ~30–60 min)*
+### 2c — Ingest OpenSanctions into FalkorDB (graph)
+
+Downloads the OpenSanctions FTM dataset and loads entities + relationships into FalkorDB.
 
 ```bash
-bash scripts/ingest-sanctions.sh
+docker compose run --rm sanctions-ingestor
 ```
 
-Downloads the OpenSanctions dataset (~2 GB JSONL) and loads it into FalkorDB. The file is cached in `sanctions_data` — re-runs skip the download.
+- Downloads `entities.ftm.json` (~2 GB, cached in `sanctions_data` volume on re-runs)
+- Loads millions of entity nodes and typed relationship edges
+- Takes 20–60 minutes depending on disk speed
+- **Self-destructs** after completion (container is removed automatically)
 
-> Re-run only when you want a fresh copy of the OpenSanctions dataset.
+### 2d — Ingest document corpus into OpenSearch (vector store)
 
-#### 7. Ingest document corpus *(one-time, ~20–40 min)*
+Fetches from 5 public sources, chunks, embeds, and indexes into OpenSearch.
 
 ```bash
-bash scripts/ingest-docs.sh
+docker compose run --rm doc-ingestor
 ```
 
-Fetches from SEC EDGAR, CourtListener, ICIJ, USASpending, and GDELT in parallel. Chunks, embeds, and indexes into OpenSearch. Idempotent — already-indexed documents are skipped.
+| Source | Content | Docs |
+| --- | --- | --- |
+| SEC EDGAR | 10-K / 10-Q / 8-K filings, AML search terms | ~300 |
+| CourtListener | Court opinions and case records | ~200 |
+| ICIJ Offshore Leaks | Panama + Paradise + Pandora Papers | ~3,000 |
+| USASpending.gov | Government contracts, compliance keywords | ~500 |
+| GDELT News | AML/sanctions news articles | ~500 |
 
-> Re-run periodically (weekly/monthly) to pick up new filings and news.
+- Each document is chunked (1,200 chars, 200 overlap), entity-extracted (spaCy + GLiNER), and embedded (nomic-embed-text via LiteLLM)
+- Ingestion is **idempotent** — already-indexed document IDs are tracked in Redis and skipped on re-runs
+- Takes 20–40 minutes
+- **Self-destructs** after completion
+
+> **Re-ingest only new data:** Re-run `doc-ingestor` anytime. It skips existing documents.  
+> **Force full re-ingest:** `docker compose run --rm -e FORCE_REINGEST=1 doc-ingestor`
 
 ---
 
-## Regular Startup
+## Step 3 — Bring Up All Services
 
 ```bash
-bash scripts/start.sh          # full stack
-# or specific groups:
-bash scripts/start-chat.sh     # chat UI only
-bash scripts/start-api.sh      # API + backend, no chat UI
-bash scripts/start-infra.sh    # data stores only
+docker compose up -d api open-webui opensearch-dashboards
+```
+
+All services and their URLs:
+
+| Service | URL | Notes |
+| --- | --- | --- |
+| **FinAgent API** | <http://localhost:8000> | Compliance chat + search API |
+| **API Docs (Swagger)** | <http://localhost:8000/docs> | Interactive API reference |
+| **Open WebUI** | <http://localhost:3001> | Chat UI — login: `admin@local.host` / `WEBUI_ADMIN_PASSWORD` |
+| **LiteLLM Proxy** | <http://localhost:4000> | LLM gateway — Bearer `LITELLM_MASTER_KEY` |
+| **Grafana** | <http://localhost:3100> | Observability dashboards — no login required |
+| **FalkorDB Browser** | <http://localhost:3000> | Graph query UI — no login required |
+| **OpenSearch Dashboards** | <http://localhost:5601> | Vector index explorer — no login required |
+| **Ollama** | <http://localhost:11434> | Local model runtime |
+
+Confirm the API is up:
+
+```bash
+curl -s http://localhost:8000/docs | grep -o "FinAgent"
+# → FinAgent
+```
+
+---
+
+## Step 4 — Sample Tests with curl
+
+### Hybrid search (bypasses the agent)
+
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "OFAC sanctions violation 2024", "limit": 5}' | jq .
+```
+
+Expected response shape:
+
+```json
+{
+  "query": "OFAC sanctions violation 2024",
+  "entities": [
+    { "id": "person:xyz", "name": "...", "schema_type": "Person" }
+  ],
+  "documents": [
+    {
+      "id": "sec_edgar:...",
+      "text": "...",
+      "source": "sec_edgar",
+      "title": "Acme Corp 10-K 2024",
+      "author": "Acme Corp",
+      "jurisdiction": "US",
+      "date": "2024-03-15",
+      "score": 0.91
+    }
+  ]
+}
+```
+
+### Chat (full agent — graph + vector + LLM)
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Is Roman Abramovich subject to any international sanctions?"}' | jq .answer
+```
+
+> Note: First response takes 1–3 minutes with the local model (Qwen3:4b via Ollama).
+
+### Entity profile lookup
+
+```bash
+# Replace with an entity ID returned by /search
+curl -s http://localhost:8000/entity/person:roman_abramovich | jq .
+```
+
+### Exposure / risk chain
+
+```bash
+curl -s http://localhost:8000/entity/person:roman_abramovich/exposure | jq .
+```
+
+Expected:
+
+```json
+{
+  "entity_id": "person:roman_abramovich",
+  "related_entities": [...],
+  "pep_exposure": [...],
+  "sanction_exposure": [...],
+  "risk_level": "HIGH"
+}
+```
+
+### Sanctions-specific search
+
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Oleg Deripaska offshore entities Panama Papers", "limit": 5}' | jq '.documents[].title'
+```
+
+### Rate limit check
+
+The API enforces per-IP rate limits. Exceeding them returns `HTTP 429`:
+
+```bash
+# /chat: 10 requests/minute
+# /search: 60 requests/minute
+# Trigger a 429 by hitting /search 61 times in one minute, or just verify the header:
+curl -I -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test"}' 2>&1 | grep -E "HTTP|X-RateLimit|Retry-After"
+```
+
+---
+
+## Step 5 — Run Evals (Optional)
+
+Measures answer quality using RAGAS metrics and an LLM-as-judge hallucination detector. Requires the API and otel-lgtm to be running.
+
+### Run all eval cases
+
+```bash
+docker compose run --rm eval-runner python -m eval.runner
+```
+
+### Run a specific tag
+
+```bash
+docker compose run --rm eval-runner python -m eval.runner --tag sanctions
+docker compose run --rm eval-runner python -m eval.runner --tag hallucination_trap
+```
+
+The eval runner:
+
+1. Calls `POST /search` and `POST /chat` for each test case
+2. Scores responses with RAGAS (faithfulness, answer relevancy, context precision, context recall)
+3. Scores hallucination with an LLM-as-judge
+4. Exports scores to OTel → Prometheus → **FinAgent — Evals** Grafana dashboard
+
+### Healthy score targets
+
+| Metric | Healthy |
+| --- | --- |
+| Faithfulness | > 0.80 |
+| Answer Relevancy | > 0.80 |
+| Context Precision | > 0.70 |
+| Context Recall | > 0.70 |
+| Hallucination Rate | < 0.10 |
+
+View scores live at: **<http://localhost:3100/d/finagent-evals>**
+
+---
+
+## Grafana Dashboards
+
+All four dashboards are pre-provisioned from `resources/grafana/dashboards/` — no manual import needed. Open Grafana at <http://localhost:3100> (anonymous access, no login).
+
+### FinAgent — Overview
+
+**URL:** <http://localhost:3100/d/finagent-overview>
+
+High-level KPIs across the full stack:
+
+| Panel | What it shows |
+| --- | --- |
+| Total Docs Ingested | Cumulative OpenSearch chunk count |
+| Chat Requests / min | Rolling rate of `/chat` calls |
+| Search Requests / min | Rolling rate of `/search` calls |
+| LLM Errors | Count of LLM failures from the circuit breaker |
+| Request Latency | p50/p95/p99 end-to-end latency timeseries |
+| Tool Calls / min | Agent tool invocation rate by tool name |
+| Error Rate | HTTP 4xx/5xx rate across all endpoints |
+
+---
+
+### FinAgent — Request Flow
+
+**URL:** <http://localhost:3100/d/finagent-flow>
+
+End-to-end trace view from query to LLM response:
+
+| Panel | What it shows |
+| --- | --- |
+| Chat Requests / min | Incoming request rate |
+| p95 End-to-end Latency | Tail latency for full agent run |
+| Tool Calls / min | Rate of tool invocations |
+| Avg Entities / Query | Mean entity resolution per request |
+| Avg Docs / Query | Mean documents retrieved per request |
+| LLM Errors | Circuit breaker failure count |
+| Stage Latency p50/p95/p99 | Per-stage breakdown: entity resolve → graph expand → embed → vector search → LLM |
+| Avg Stage Latency | Bar gauge for each pipeline stage |
+| Tool Calls by Tool | Time series per tool (search_documents, expand_entity, get_entity, get_exposure) |
+| Tool Call Share | Pie chart of tool usage distribution |
+| Live Traces | Linked Tempo traces for individual requests |
+| Structured Logs | Loki log stream from `finagent-api` |
+
+---
+
+### FinAgent — Retrieval Quality (HRT)
+
+**URL:** <http://localhost:3100/d/finagent-retrieval>
+
+Hybrid Retrieval Testing metrics:
+
+| Panel | What it shows |
+| --- | --- |
+| Search Requests / min | Incoming search rate |
+| p95 Search Latency | Tail latency for `/search` endpoint |
+| Entity Resolution Rate | Fraction of queries where ≥1 entity was resolved |
+| Avg Docs Returned | Mean document count per search call |
+| Graph Expansion Depth | Average 2-hop neighbour count |
+| Open Circuit Breakers | Count of currently-open circuit breakers |
+| Search Latency p50/p95/p99 | Latency percentile trends |
+| Entity & Doc Counts per Query | Entity resolution vs. document count over time |
+| Zero-Result Rate | Rate of queries that fell back from hybrid to pure kNN |
+| Graph Expansion Hit Rate | Fraction of searches with successful graph expansion |
+| Circuit Breaker Events | Open/half-open events by service (llm, opensearch, graph) |
+| Embed & LLM Errors | Error count for embedding and LLM calls |
+
+---
+
+### FinAgent — Evals: Hallucination + RAGAS
+
+**URL:** <http://localhost:3100/d/finagent-evals>
+
+Eval quality dashboard (populated by `eval-runner`):
+
+| Panel | What it shows |
+| --- | --- |
+| Faithfulness | Latest RAGAS faithfulness score (0–1) |
+| Answer Relevancy | Latest RAGAS answer relevancy score |
+| Context Precision | Latest RAGAS context precision score |
+| Context Recall | Latest RAGAS context recall score |
+| Hallucination Rate | Fraction of responses flagged as hallucinated (< 0.6 groundedness) |
+| Overall Health | Composite gauge of all scores |
+| RAGAS Score Trends | Time series of all 4 RAGAS metrics |
+| Hallucination Rate Trend | Hallucination rate over time |
+| All Scores — Latest Run | Bar gauge comparing all scores in one view |
+| How to Run Evals | Instructions panel |
+| Eval Runner Logs | Loki log stream from eval runs |
+
+---
+
+## Regular Startup (after first-time setup)
+
+```bash
+# Full stack
+docker compose up -d
+
+# Or selectively
+docker compose up -d redis-stack opensearch postgres ollama otel-lgtm litellm api open-webui opensearch-dashboards
 ```
 
 ## Shutdown
 
 ```bash
-bash scripts/stop.sh           # stop all, keep data
-bash scripts/stop.sh --reset   # stop all AND delete volumes (full wipe)
-bash scripts/stop.sh --chat    # stop chat services only
-bash scripts/stop.sh --api     # stop API + backend only
+docker compose down              # stop all, keep data volumes
+docker compose down -v           # stop all AND delete volumes (full wipe)
 ```
 
----
-
-## Service URLs
-
-| Service | URL | Credentials |
-| --- | --- | --- |
-| Chat UI (Open WebUI) | <http://localhost:3001> | `admin@local.host` / `WEBUI_ADMIN_PASSWORD` |
-| Compliance API (docs) | <http://localhost:8000/docs> | — |
-| LiteLLM proxy | <http://localhost:4000> | Bearer `LITELLM_MASTER_KEY` |
-| FalkorDB browser | <http://localhost:3000> | — |
-| OpenSearch Dashboards | <http://localhost:5601> | — |
-| Ollama | <http://localhost:11434> | — |
-| **Grafana (observability)** | <http://localhost:3100> | anonymous / no login |
-
----
-
-## Quick Reference
-
-| Task | Command |
-| --- | --- |
-| First-time setup | `bash scripts/setup.sh` |
-| Start full stack | `bash scripts/start.sh` |
-| Stop everything | `bash scripts/stop.sh` |
-| Full reset (wipe data) | `bash scripts/stop.sh --reset` then `bash scripts/setup.sh` |
-| Refresh sanctions data | `bash scripts/ingest-sanctions.sh` |
-| Refresh document corpus | `bash scripts/ingest-docs.sh` |
-| Pull embedding model only | `bash scripts/pull-models.sh --embed-only` |
-| View logs | `docker compose logs -f <service>` |
-| Rebuild after code changes | `docker compose build && docker compose up -d api` |
-| Open Grafana | <http://localhost:3100> |
-| Run eval suite | `docker compose run --rm eval-runner` |
-| Run evals locally | `python -m eval.runner` |
-| Check chunk count in OpenSearch | `curl -s http://localhost:9200/fintech-docs/_count` |
-| Check FalkorDB node/edge counts | See FalkorDB browser at <http://localhost:3000> |
-
----
-
-## Observability
-
-### Grafana dashboards
-
-`otel-lgtm` runs Grafana, Prometheus, Loki, and Tempo in one container.  All Python
-services send OTel traces, metrics, and logs to it automatically when running inside
-Docker.
+## Rebuilding after code changes
 
 ```bash
-# Open Grafana (no login required — anonymous access enabled)
-open http://localhost:3100
+docker compose build api
+docker compose up -d api
 ```
-
-Three custom dashboards are pre-provisioned from `resources/grafana/dashboards/`:
-
-| Dashboard | URL path | What it shows |
-| --- | --- | --- |
-| FinAgent — Request Flow | `/d/finagent-flow` | Query → graph → vector → LLM stages; Tempo traces; tool call distribution |
-| FinAgent — Retrieval Quality | `/d/finagent-retrieval` | HRT metrics: entity resolution rate, latency p50/p95/p99, circuit breakers |
-| FinAgent — Evals | `/d/finagent-evals` | RAGAS faithfulness/relevancy/precision/recall + hallucination rate trend |
-
----
-
-## Evals
-
-Run the eval suite after ingestion to measure answer quality.  The eval runner calls
-the live `/search` and `/chat` API endpoints, judges each response with an LLM, then
-computes RAGAS metrics and exports scores to Grafana.
-
-```bash
-# Inside Docker (requires api + otel-lgtm running):
-docker compose run --rm eval-runner
-
-# Locally (requires venv with requirements.txt installed):
-python -m eval.runner                        # all 17 test cases
-python -m eval.runner --tag sanctions        # only sanctions cases
-python -m eval.runner --tag hallucination_trap   # adversarial / no-context cases
-python -m eval.runner --api http://api:8000  # point at Docker-network API
-```
-
-Scores are printed to stdout and exported to the `finagent.eval.score` OTel gauge,
-visible on the **FinAgent — Evals** Grafana dashboard.
-
-| Metric | Source | Healthy range |
-| --- | --- | --- |
-| Faithfulness | RAGAS | > 0.80 |
-| Answer Relevancy | RAGAS | > 0.80 |
-| Context Precision | RAGAS | > 0.70 |
-| Context Recall | RAGAS | > 0.70 |
-| Hallucination Rate | LLM-judge | < 0.10 |
 
 ---
 
@@ -270,75 +410,44 @@ visible on the **FinAgent — Evals** Grafana dashboard.
 
 ### `GRAPH.QUERY` unknown command
 
-`redis/redis-stack:latest` dropped RedisGraph in v7.2. Switch to FalkorDB:
+`redis/redis-stack:latest` dropped RedisGraph in v7.2. Use FalkorDB:
 
 ```bash
-# docker-compose.yml should have: image: falkordb/falkordb:latest
+# docker-compose.yml must have: image: falkordb/falkordb:latest
 docker compose rm -f redis-stack && docker compose up -d redis-stack
 ```
 
-### `GLiNER._from_pretrained() missing proxies / resume_download`
-
-`huggingface_hub >= 0.26` dropped those kwargs. Pin it in `requirements.txt`:
-
-```text
-huggingface_hub>=0.23,<0.26
-```
-
-Then rebuild: `docker compose build`.
-
-### `ValidationError: extra inputs not permitted`
-
-`.env` contains keys not declared in the `Settings` model. Ensure `core/config.py` has `extra = "ignore"` in its inner `Config` class.
-
-### `Invalid space_type: cosine` (OpenSearch)
-
-OpenSearch FAISS does not support `cosine`. The index mapping in `vector/index_setup.py` must use `engine: nmslib` + `space_type: cosinesimil`. Delete the bad index and recreate:
-
-```bash
-curl -X DELETE http://localhost:9200/fintech-docs
-docker compose run --rm doc-ingestor
-```
-
-### `encoding_format: base64` not supported by Ollama
-
-`drop_params` must be under `litellm_settings:` in `resources/litellm-config.yaml`, not under `general_settings:`. Restart LiteLLM after fixing:
-
-```bash
-docker compose restart litellm
-```
-
-### `404 Not Found` for `http://ollama:11434/api/embed`
-
-The `nomic-embed-text` model is not pulled. Pull it directly:
-
-```bash
-docker exec finagent-ollama ollama pull nomic-embed-text
-# or pull all models:
-bash scripts/pull-models.sh
-```
-
-### ICIJ download returns 403
-
-The ICIJ URL changed. Ensure `ingestion/sources/icij.py` uses `full-oldb.LATEST.zip` (not `full-oldb.zip`) and that the request includes browser-like `User-Agent` and `Referer` headers.
-
-### OpenSearch container unhealthy
-
-Needs `vm.max_map_count` increased (Linux / WSL2 only):
+### OpenSearch container unhealthy (Linux / WSL2)
 
 ```bash
 sudo sysctl -w vm.max_map_count=262144
-# Make permanent:
 echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
 ```
 
-### Ollama out of memory
+### `404` for embedding model
 
-`qwen3:30b-a3b` needs ~22 GB RAM + VRAM combined. Switch the primary model:
+```bash
+docker exec finagent-ollama ollama pull nomic-embed-text
+```
+
+### Grafana dashboards show "data source not found"
+
+Dashboard datasource UIDs must be hardcoded (`"prometheus"`, `"loki"`, `"tempo"`), not template variables. All four dashboards in this repo already use hardcoded UIDs and provision automatically.
+
+### Chat response is empty / eval runner skips cases
+
+Each `/chat` request with a local model can take 1–3 minutes. The eval runner uses a 360-second per-request timeout. If you see timeouts with a larger model, switch to `qwen3:4b`:
 
 ```bash
 # In .env:
-PRIMARY_MODEL=gemma3-12b
-# In resources/litellm-config.yaml, move gemma3-12b to top of model_list
-docker compose restart litellm api
+PRIMARY_MODEL=qwen3-4b
+docker compose restart api
+```
+
+### Entity names with apostrophes (e.g. "Deripaska's") cause 500 on /search
+
+Fixed in `graph/entity_resolver.py` — single quotes are escaped before Cypher interpolation. Rebuild if you're on an older image:
+
+```bash
+docker compose build api && docker compose up -d api
 ```

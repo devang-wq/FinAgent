@@ -1,6 +1,9 @@
 # FinAgent — Architecture
 
-FinAgent is a containerized AML/PEP/sanctions compliance research platform. It ingests documents from five public data sources, builds a knowledge graph of entities and relationships, indexes document chunks into a vector store, and exposes a conversational agent that answers compliance questions using hybrid semantic + graph retrieval.
+FinAgent is a containerized AML/PEP/sanctions compliance research platform. It ingests
+documents from five public data sources, builds a knowledge graph of entities and
+relationships, indexes document chunks into a vector store, and exposes a conversational
+agent that answers compliance questions using hybrid semantic + graph retrieval.
 
 ---
 
@@ -43,15 +46,18 @@ FinAgent is a containerized AML/PEP/sanctions compliance research platform. It i
                     │                                   │
                     └─────────────────┬─────────────────┘
                                       │
-                             ┌────────▼────────┐
-                             │   FastAPI :8000 │
-                             │  /chat          │
-                             │  /entity/{id}   │
-                             │  /search        │
-                             └────────┬────────┘
+                             ┌────────▼──────────┐
+                             │   FastAPI :8000   │
+                             │  slowapi limiter  │
+                             │  /chat  10/min   │
+                             │  /search 60/min  │
+                             │  /entity/{id}    │
+                             └────────┬──────────┘
                                       │
                              ┌────────▼────────┐
-                             │ Pydantic-AI Agent│
+                             │ PydanticAI Agent│
+                             │  0.4.2          │
+                             │  request_limit=8│
                              │  4 tools:        │
                              │  search_docs     │
                              │  get_entity      │
@@ -61,8 +67,7 @@ FinAgent is a containerized AML/PEP/sanctions compliance research platform. It i
                                       │
                              ┌────────▼────────┐
                              │ LiteLLM :4000   │
-                             │ qwen3-30b-a3b   │◄── Ollama :11434
-                             │ gemma3:12b      │    (local models)
+                             │ qwen3:4b        │◄── Ollama :11434
                              │ + optional cloud│◄── Anthropic / etc.
                              └────────┬────────┘
                                       │
@@ -73,6 +78,12 @@ FinAgent is a containerized AML/PEP/sanctions compliance research platform. It i
            │  Chat UI :3001  │                │  Dashboards     │
            │                 │                │  :5601          │
            └─────────────────┘                └─────────────────┘
+
+           ┌──────────────────────────────────────────────────┐
+           │  grafana/otel-lgtm :3100 / :4317                 │
+           │  Grafana · Prometheus · Loki · Tempo             │
+           │  4 pre-provisioned dashboards (no login)         │
+           └──────────────────────────────────────────────────┘
 
                     ┌─────────────────────────────────┐
                     │  sanctions-ingestor (one-shot)   │
@@ -92,27 +103,14 @@ FinAgent is a containerized AML/PEP/sanctions compliance research platform. It i
 | `opensearch-dashboards` | `opensearchproject/opensearch-dashboards:2.13.0` | 5601 | Index/query visualization | Always up |
 | `postgres` | `postgres:16-alpine` | 5432 | LiteLLM request metadata DB | Always up |
 | `ollama` | `ollama/ollama:latest` | 11434 | Local LLM runtime | Always up |
-| `ollama-init` | `ollama/ollama:latest` | — | Pull models on first start | One-shot |
+| `ollama-init` | `ollama/ollama:latest` | — | Pull `qwen3:4b` + `nomic-embed-text` | One-shot |
 | `litellm` | `ghcr.io/berriai/litellm:main-latest` | 4000 | LLM gateway (local + cloud) | Always up |
-| `api` | `Dockerfile.api` | 8000 | FastAPI compliance API | Always up |
+| `api` | `Dockerfile.api` | 8000 | FastAPI compliance API + slowapi rate limiter | Always up |
 | `open-webui` | `ghcr.io/open-webui/open-webui:main` | 3001 | Chat frontend | Always up |
-| `otel-lgtm` | `grafana/otel-lgtm:latest` | 3100, 4317 | Grafana + Prometheus + Loki + Tempo | Always up |
+| `otel-lgtm` | `grafana/otel-lgtm:latest` | 3100, 4317, 4318 | Grafana + Prometheus + Loki + Tempo | Always up |
 | `sanctions-ingestor` | `Dockerfile.worker` | — | Load OpenSanctions into FalkorDB | One-shot |
 | `doc-ingestor` | `Dockerfile.worker` | — | Fetch 5 sources → chunk → embed → index | One-shot / refresh |
 | `eval-runner` | `Dockerfile.eval` | — | RAGAS + hallucination evals → Grafana | On-demand |
-
----
-
-## Service Groups
-
-| Group | Services | Script |
-| --- | --- | --- |
-| Infrastructure | redis-stack, opensearch, postgres, ollama | `start-infra.sh` |
-| Chat only | postgres, ollama, litellm, open-webui | `start-chat.sh` |
-| API + backend | redis-stack, opensearch, postgres, ollama, litellm, opensearch-dashboards, api | `start-api.sh` |
-| Full stack | all of the above + open-webui | `start.sh` |
-| Ingest sanctions | sanctions-ingestor | `ingest-sanctions.sh` |
-| Ingest documents | doc-ingestor | `ingest-docs.sh` |
 
 ---
 
@@ -120,191 +118,233 @@ FinAgent is a containerized AML/PEP/sanctions compliance research platform. It i
 
 ### FalkorDB — Knowledge Graph (`entities` graph)
 
-Stores the sanctions and relationship graph loaded from OpenSanctions (~millions of nodes).
-
 | Element | Detail |
 | --- | --- |
 | Node label | `Entity` |
 | Node properties | `id`, `name`, `schema` (Person/Organization/…), `datasets` |
 | Relationship types | `OWNS`, `DIRECTOR_OF`, `ASSOCIATED_WITH`, `PARENT_OF`, `SUBSIDIARY_OF`, `FAMILY_OF`, `MEMBER_OF`, `EMPLOYEE_OF`, `OPERATES` |
-| Primary use | Multi-hop expansion, PEP/sanctions path queries, entity enrichment during ingestion |
+| Primary use | Multi-hop expansion, PEP/sanctions path queries, entity enrichment |
 | Port | 6379 (Redis protocol) |
-| Browser UI | http://localhost:3000 |
+| Browser UI | <http://localhost:3000> |
 
-Sample queries:
-```
+Sample Cypher queries:
+
+```cypher
 GRAPH.QUERY entities "MATCH (n) RETURN count(n) AS nodes"
 GRAPH.QUERY entities "MATCH ()-[r]->() RETURN count(r) AS edges"
 GRAPH.QUERY entities "MATCH (n:Entity) RETURN n.schema, count(n) ORDER BY count(n) DESC"
 GRAPH.QUERY entities "MATCH (n:Entity) WHERE toLower(n.name) CONTAINS 'abramovich' OPTIONAL MATCH (n)-[e]-(m) RETURN n,e,m LIMIT 100"
 ```
 
-> **Note:** FalkorDB replaced `redis/redis-stack` which dropped the RedisGraph module in v7.2. FalkorDB is the community-maintained fork and is drop-in compatible — all `GRAPH.QUERY` commands work unchanged.
+> **Note:** FalkorDB replaced `redis/redis-stack` which dropped RedisGraph in v7.2.
+> All `GRAPH.QUERY` commands are drop-in compatible.
 
 ### OpenSearch — Vector Index (`fintech-docs`)
 
-Stores document chunks with embeddings and entity annotations.
-
 | Field | Type | Detail |
 | --- | --- | --- |
-| `chunk_id` | keyword | Unique chunk identifier |
-| `document_id` | keyword | Parent document ID |
-| `doc_type` | keyword | `chunk`, `entity_profile`, `exposure_profile` |
-| `source` | keyword | `sec_edgar`, `courtlistener`, `icij`, `procurement`, `news` |
-| `title` | text + keyword | Document title; English analyzer for BM25, keyword subfield for sort |
-| `author` | text + keyword | Filing company, court, or publication domain; BM25-boosted |
-| `jurisdiction` | keyword | Country code, US state, or court circuit (e.g. `US`, `9th`) |
-| `date` | date | ISO-8601 date of original document |
-| `doc_length` | integer | Character count of full original document (pre-chunking) |
-| `url` | keyword | Canonical source URL |
 | `text` | text | Chunk content (English analyzer) |
-| `entity_ids` | keyword[] | Resolved entity IDs (for filtered KNN) |
-| `entity_names` | keyword[] | Resolved entity names |
-| `embedding` | knn_vector | 768-dim, cosinesimil, HNSW m=16, nmslib engine |
+| `embedding` | knn_vector | 768-dim, cosinesimil, HNSW nmslib engine |
+| `source` | keyword | `sec_edgar`, `courtlistener`, `icij`, `procurement`, `news` |
+| `title` | text + keyword | BM25-boosted (×2.0 in `search_hybrid`) |
+| `author` | text + keyword | BM25-boosted (×0.6 in `search_hybrid`) |
+| `jurisdiction` | keyword | Country/state code — boost only if passed explicitly |
+| `date` | date | ISO-8601 |
+| `doc_length` | integer | Characters in original pre-chunked document |
+| `url` | keyword | Canonical source URL |
+| `entity_ids` | keyword[] | Resolved graph entity IDs (KNN filter) |
 | `mentions` | nested | Char offset spans for UI highlighting |
 
-The `title` and `author` fields use OpenSearch multi-field mapping (`text` + `keyword` subfield) so they support both BM25 full-text search and exact/sort operations. `search_hybrid()` boosts title matches (×2.0) and author matches (×0.6) as `should` clauses on top of the kNN `must` clause.
+Dashboards UI: <http://localhost:5601>
 
-Dashboards UI: http://localhost:5601
-
-> **Note:** OpenSearch's FAISS engine does not support `cosine` as a space type. The index uses `nmslib` engine with `cosinesimil`.
+> **Note:** OpenSearch FAISS engine does not support `cosine`. The index uses `nmslib` with `cosinesimil`.
 
 ---
 
 ## Ingestion Pipeline
 
-### Sanctions Graph (one-shot, run before doc ingestion)
+### Sanctions Graph (one-shot)
 
 ```text
 OpenSanctions JSONL (~2 GB)
-  └── downloader.py          stream download via requests
-  └── sanctionsParser.py     parse entity + extract relationships
+  └── downloader.py          stream download via requests (cached in volume)
+  └── sanctionsParser.py     parse FTM entity + extract typed relationships
   └── redisWriter.py         UNWIND-based batch Cypher MERGE (500/batch)
   └── FalkorDB               MERGE (e:Entity {id}) + relationship edges
 ```
 
-### Document Ingestion (one-shot, periodic refresh)
+Container self-destructs after completion.
+
+### Document Ingestion (idempotent, periodic refresh)
 
 Five sources run in parallel via `asyncio.gather`:
 
 ```text
-SEC EDGAR          10-K/10-Q/8-K, 6 AML search terms, 180 days back, max 300 docs
-                   emits: author (company), jurisdiction="US", url (index page)
-CourtListener      court opinions, 6 queries, optional auth token, max 200 docs
-                   emits: title (case_name), author (court_id), jurisdiction (court_id)
-ICIJ Offshore Leaks  Panama + Paradise + Pandora Papers, CSV bulk ~250 MB
+SEC EDGAR          10-K/10-Q/8-K, AML search terms, 180 days back
+                   emits: author (company), jurisdiction="US", url
+CourtListener      court opinions, optional auth token
+                   emits: title (case_name), author+jurisdiction (court_id)
+ICIJ Offshore Leaks  Panama + Paradise + Pandora Papers CSV bulk
                    emits: author (sourceID), jurisdiction (countries CSV)
-USASpending.gov    contracts, 5 compliance keywords, max 500 docs
-                   emits: author (agency name), jurisdiction (state code or "US")
-GDELT Doc 2.0      news, 6 AML/sanctions queries, max 500 docs
-                   emits: author (domain), jurisdiction (sourcecountry), url
-    │
-    ▼ (all sources produce: text, title, author, jurisdiction, date, url)
-    │
-chunk_text()              1200-char sentence-boundary chunks, 200 overlap
-                          metadata passthrough: source, title, author, jurisdiction,
-                          date, doc_length, url → stored on every chunk
+USASpending.gov    contracts, compliance keywords
+                   emits: author (agency name), jurisdiction (state or "US")
+GDELT Doc 2.0      news, AML/sanctions queries
+                   emits: author (domain), jurisdiction (country), url
     │
     ▼
-HybridEntityExtractor     spaCy (7 labels) + GLiNER (8 financial labels)
-                          merge: GLiNER preferred on overlap, 0.45 confidence threshold
+chunk_text()       1200-char sentence-boundary chunks, 200 char overlap
     │
     ▼
-EntityEnricher            exact-match → fuzzy (RapidFuzz 80%) → create new node
-                          annotates chunk with entity_ids + mention char spans
+HybridEntityExtractor   spaCy (7 labels) + GLiNER (8 financial labels)
+                        GLiNER preferred on overlap, 0.45 confidence threshold
     │
     ▼
-embed()                   nomic-embed-text via LiteLLM proxy, batch=128
+EntityEnricher     exact-match → fuzzy (RapidFuzz 80%) → create new node
+                   annotates chunk with entity_ids + mention char spans
     │
     ▼
-OpenSearch bulk index     HNSW KNN (nmslib/cosinesimil) + BM25 text fields
-                          all metadata fields stored as searchable/filterable attrs
+embed()            nomic-embed-text via LiteLLM proxy
     │
     ▼
-ProfileBuilder            synthetic entity + exposure profile docs
-                          bridges graph ↔ semantic search
+OpenSearch bulk    HNSW KNN + BM25 text fields + all metadata
+    │
+    ▼
+ProfileBuilder     synthetic entity + exposure profile docs
 ```
 
-Redis checkpointing (`SADD fintech:ingested:{source}`) makes re-runs idempotent — already-processed document IDs are skipped.
+Redis checkpointing (`SADD fintech:ingested:{source}`) makes re-runs idempotent.
 
-**Approximate data sizes:**
+---
 
-| Source | Docs | Raw text | Chunks | OpenSearch |
-| --- | --- | --- | --- | --- |
-| SEC EDGAR | 300 | ~12 MB | ~10,000 | ~35 MB |
-| CourtListener | 200 | ~9 MB | ~7,000 | ~25 MB |
-| ICIJ Offshore Leaks | 3,000 | ~1 MB | ~3,000 | ~12 MB |
-| USASpending | 500 | ~150 KB | ~500 | ~5 MB |
-| GDELT News | 500 | ~75 KB | ~500 | ~3 MB |
-| **Total** | **4,500** | **~22 MB** | **~21,000** | **~80 MB** |
+## API Layer
 
-Separate downloads (volumes, not in OpenSearch): ICIJ zip ~250 MB, OpenSanctions JSONL ~2 GB, FalkorDB graph ~500 MB–2 GB.
+### Rate Limiting
+
+`slowapi 0.1.9` enforces per-IP rate limits via `SlowAPIMiddleware`:
+
+| Endpoint | Limit | Reason |
+| --- | --- | --- |
+| `POST /chat` | 10 req/min | Each call triggers LLM — expensive |
+| `POST /search` | 60 req/min | Vector search only — cheaper |
+
+Exceeded limits return `HTTP 429 Too Many Requests` with a `Retry-After` header.
+The `Limiter` singleton lives in `apps/api/limiter.py` — swap to
+`storage_uri="redis://redis-stack:6379/1"` for multi-replica deployments.
+
+### Agent Safety
+
+- **Loop guard:** `expand_entity` returns an explicit not-found message instead
+  of `"[]"` when an entity is absent from the graph, preventing the LLM from
+  retrying indefinitely.
+- **Request cap:** `UsageLimits(request_limit=8)` passed to every `agent.run()`
+  call; raises `UsageLimitExceeded` if the agent exceeds 8 LLM calls per turn.
+- **System prompt:** Instructs the agent not to retry tools with the same input
+  after a not-found result.
+
+### Cypher Safety
+
+`entity_resolver.py._exact_lookup()` escapes `\` and `'` in entity names before
+interpolating them into Cypher queries, preventing syntax errors on names like
+`Oleg Deripaska's`.
 
 ---
 
 ## Query / Chat Flow
 
 ```text
-User question
-    │
-    ▼
 POST /chat  →  ComplianceAgent.answer()
     │
     ▼
-Pydantic-AI agent 0.4.x  (system: "compliance analyst for AML/PEP/sanctions…")
+PydanticAI agent 0.4.2  (system: "compliance analyst for AML/PEP/sanctions…")
     │
-    ├── tool: search_documents(query)          [OTel span: tool.search_documents]
-    │     └── EntityResolver: spaCy NER → fuzzy graph lookup
+    ├── tool: expand_entity(name)          [OTel span: tool.expand_entity]
+    │     └── EntityResolver: extract_and_resolve(name)
+    │     └── If found: FalkorDB 2-hop expansion
+    │     └── If not found: "not found, do not retry" message → agent moves on
+    │
+    ├── tool: search_documents(query)      [OTel span: tool.search_documents]
+    │     └── EntityResolver: NER → exact lookup (apostrophe-safe) → fuzzy
     │     └── FalkorDB: 2-hop graph expansion for matched entities
-    │     └── search_hybrid(): kNN must + BM25 should (title/author/jurisdiction)
-    │     └── Returns ranked chunks with source/title/author/jurisdiction/url
+    │     └── search_hybrid(): kNN must + BM25 should (title×2.0, author×0.6)
     │
-    ├── tool: get_entity(entity_id)            [OTel span: tool.get_entity]
+    ├── tool: get_entity(entity_id)        [OTel span: tool.get_entity]
     │     └── GRAPH.QUERY → entity node properties
     │
-    ├── tool: get_exposure(entity_id)          [OTel span: tool.get_exposure]
-    │     └── 3-hop expansion + PEP path (4-hop) + sanctions path (4-hop)
-    │     └── risk_level: HIGH / MEDIUM / LOW
-    │
-    └── tool: expand_entity(entity_name)       [OTel span: tool.expand_entity]
-          └── name → entity_id resolution → 2-hop neighborhood
+    └── tool: get_exposure(entity_id)      [OTel span: tool.get_exposure]
+          └── 3-hop expansion + PEP path + sanctions path
+          └── risk_level: HIGH / MEDIUM / LOW
     │
     ▼
-LiteLLM proxy :4000
-    └── primary:      qwen3:30b-a3b (Ollama, MoE, 3B active params)
-    └── OOM fallback: qwen3:8b      (auto on OOM error)
-    └── fallback:     gemma3:12b
-    └── optional:     claude-haiku / claude-sonnet (ANTHROPIC_API_KEY)
+LiteLLM :4000  →  qwen3:4b (Ollama) or Claude (if ANTHROPIC_API_KEY)
     │
     ▼
-Answer text  (all spans exported to Tempo via otel-lgtm :4317)
+Answer  (all spans → Tempo, metrics → Prometheus, logs → Loki via otel-lgtm)
 ```
-
-**Sample queries:**
-
-- *"Is Roman Abramovich on any sanctions list? Who are his known associates?"*
-- *"What recent SEC filings mention OFAC violations or sanctions breaches?"*
-- *"Find offshore entities connected to Oleg Deripaska in the Panama Papers."*
-- *"Summarize AML risks disclosed in recent 10-K filings."*
 
 ---
 
-## LLM Gateway (LiteLLM)
+## Observability
 
-All model calls — chat completions and embeddings — route through a single LiteLLM proxy. Application code uses the OpenAI client pointed at `http://litellm:4000/v1`; no vendor-specific SDK is imported.
+All services emit OTel telemetry to `grafana/otel-lgtm` on port 4317 (gRPC).
+
+### Grafana Dashboards
+
+All four dashboards are pre-provisioned from `resources/grafana/dashboards/`
+with hardcoded datasource UIDs (`prometheus`, `loki`, `tempo`). No login needed.
+
+| Dashboard | UID | Description |
+| --- | --- | --- |
+| FinAgent — Overview | `finagent-overview` | KPIs: rate, latency, errors, tool calls |
+| FinAgent — Request Flow | `finagent-flow` | Stage latency, traces (Tempo), logs (Loki) |
+| FinAgent — Retrieval Quality | `finagent-retrieval` | Entity resolution, graph hits, circuit breakers |
+| FinAgent — Evals | `finagent-evals` | RAGAS scores + hallucination rate |
+
+### OTel Spans
+
+| Span | Service | What it measures |
+| --- | --- | --- |
+| `llm.agent_run` | api | Full agent turn duration |
+| `tool.search_documents` | api | Hybrid retrieval per tool call |
+| `tool.expand_entity` | api | Graph lookup + expansion |
+| `tool.get_entity` | api | Entity profile fetch |
+| `tool.get_exposure` | api | Exposure chain computation |
+| `retrieval.entity_resolve` | api | NER + graph lookup stage |
+| `retrieval.graph_expand` | api | 2-hop FalkorDB expansion |
+| `retrieval.embed` | api | Embedding call to LiteLLM |
+| `retrieval.vector_search` | api | OpenSearch kNN + BM25 query |
+
+### Circuit Breakers
+
+| Breaker | `fail_max` | `timeout_s` | Protects |
+| --- | --- | --- | --- |
+| `llm` | 3 | 60 | LiteLLM proxy |
+| `opensearch` | 5 | 30 | OpenSearch vector search |
+| `graph` | 5 | 30 | FalkorDB graph queries |
+| `sec` | 5 | 120 | SEC EDGAR API |
+| `courtlistener` | 5 | 300 | CourtListener API |
+| `icij` | 2 | 600 | ICIJ bulk download |
+| `procurement` | 5 | 300 | USASpending API |
+| `news` | 5 | 300 | GDELT API |
+
+---
+
+## LLM Gateway
+
+All model calls route through a single LiteLLM proxy. Application code uses the
+OpenAI client pointed at `http://litellm:4000/v1`; no vendor SDK is imported.
 
 | Model alias | Backend | Notes |
 | --- | --- | --- |
-| `qwen3-30b-a3b` | `ollama/qwen3:30b-a3b` | Primary. MoE, 30B total / 3B active params. RTX 4060 8 GB + RAM offload. |
-| `qwen3-8b` | `ollama/qwen3:8b` | OOM fallback — auto-triggered by `router_settings.fallbacks` when 30b OOMs. |
-| `gemma3-12b` | `ollama/gemma3:12b` | Fallback. Fits 8 GB VRAM at Q3_K_M. |
-| `nomic-embed-text` | `ollama/nomic-embed-text` | Embeddings. 768-dim. Fully local. |
-| `claude-haiku` | Anthropic API | Optional. Requires `ANTHROPIC_API_KEY`. |
-| `claude-sonnet` | Anthropic API | Optional. Requires `ANTHROPIC_API_KEY`. |
+| `qwen3-4b` | `ollama/qwen3:4b` | Default primary (~3 GB) |
+| `nomic-embed-text` | `ollama/nomic-embed-text` | Embeddings, 768-dim |
+| `claude-haiku` | Anthropic API | Optional — requires `ANTHROPIC_API_KEY` |
+| `claude-sonnet` | Anthropic API | Optional — requires `ANTHROPIC_API_KEY` |
 
 Config: `resources/litellm-config.yaml`
 
-> **Note:** `drop_params: true` must be under `litellm_settings:` (not `general_settings:`) in the config. This drops `encoding_format: base64` which the OpenAI SDK sends by default but Ollama does not support.
+> `drop_params: true` must be under `litellm_settings:` (not `general_settings:`).
+> This drops `encoding_format: base64` which the OpenAI SDK sends by default but
+> Ollama does not support.
 
 ---
 
@@ -312,111 +352,90 @@ Config: `resources/litellm-config.yaml`
 
 ```text
 FinAgent/
-├── apps/
-│   ├── api/                    FastAPI app (routers: chat, entity, search)
-│   └── worker/
-│       ├── ingestion_worker.py 5-source parallel ingestion orchestrator
-│       └── profile_builder.py  Synthetic entity/exposure doc builder
-│
-├── ingestion/
-│   ├── pipeline.py             Chunk → enrich → embed → index loop (+ metadata passthrough)
-│   ├── entity_extraction.py    spaCy + GLiNER hybrid NER
-│   ├── enrichment.py           Entity resolution + graph annotation
-│   ├── chunking.py             Sentence-boundary chunker
-│   └── sources/
-│       ├── sec.py              Emits author (company), jurisdiction="US", url
-│       ├── courtlistener.py    Emits title (case_name), author+jurisdiction (court_id)
-│       ├── icij.py             Emits author (sourceID), jurisdiction (countries)
-│       ├── procurement.py      Emits author (agency), jurisdiction (state or "US")
-│       └── news.py             Emits author (domain), jurisdiction (country), url
-│
-├── ingestion-pipelines/
-│   └── sanctions-pipeline/     Standalone OpenSanctions → FalkorDB loader
-│       ├── downloader.py
-│       ├── sanctionsParser.py
-│       └── main.py
+├── apps/api/
+│   ├── main.py               FastAPI app + SlowAPIMiddleware + 429 handler
+│   ├── limiter.py            Limiter(key_func=get_remote_address) singleton
+│   ├── dependencies.py       lru_cache service factories
+│   └── routers/
+│       ├── chat.py           @limiter.limit("10/minute") — POST /chat
+│       ├── search.py         @limiter.limit("60/minute") — POST /search
+│       └── entity.py         GET /entity/{id} + /entity/{id}/exposure
 │
 ├── graph/
-│   ├── redis_graph_repository.py  Cypher query wrapper (FalkorDB)
-│   ├── entity_resolver.py         NER + fuzzy name resolution
-│   └── exposure_service.py        PEP/sanctions risk classification
-│
-├── vector/
-│   ├── embeddings.py           embed() via LiteLLM
-│   ├── index_setup.py          Idempotent index creation + put_mapping BM25 migration
-│   ├── opensearch_repository.py search, search_hybrid (BM25+kNN)
-│   └── retriever.py            Hybrid search orchestrator with OTel sub-spans
-│
-├── observability/
-│   ├── setup.py                OTel SDK init → otel-lgtm :4317
-│   ├── metrics.py              Histograms: latency, entities, docs, tool_calls, evals
-│   ├── tracing.py              get_tracer() helper
-│   └── circuit_breakers.py     Tenacity breakers for graph / vector / LLM
-│
-├── eval/
-│   └── runner.py               RAGAS + LLM-judge, 17 cases, exports to finagent_eval_score gauge
+│   ├── entity_resolver.py    _exact_lookup: escapes ' and \ before Cypher interpolation
+│   ├── redis_graph_repository.py
+│   └── exposure_service.py
 │
 ├── llm/
-│   ├── agent.py                Pydantic-AI 0.4.x compliance agent + 4 instrumented tools
-│   └── litellm_client.py       OpenAI SDK wrapper for LiteLLM proxy
+│   └── agent.py              expand_entity returns "not found" message (not "[]")
+│                             agent.run(..., usage_limits=UsageLimits(request_limit=8))
 │
-├── tools/                      Agent tool implementations
-│   ├── search_documents.py
-│   ├── get_entity.py
-│   ├── get_exposure.py
-│   └── expand_entity.py
+├── eval/
+│   └── runner.py             reads FINAGENT_API_BASE env var; 360s chat timeout
 │
-├── core/
-│   ├── config.py               Pydantic Settings (env-driven, extra="ignore")
-│   └── models.py               Document model with 7 metadata fields
+├── observability/
+│   ├── circuit_breakers.py   8 breakers: llm, opensearch, graph, sec, court, icij, …
+│   └── metrics.py
 │
-├── docker/
-│   ├── Dockerfile.api          python:3.12-slim + requirements.txt
-│   ├── Dockerfile.worker       python:3.12-slim + gcc/lxml + GLiNER weights pre-cached
-│   └── Dockerfile.eval         python:3.12-slim + requirements-eval.txt
-│
-├── resources/
-│   ├── litellm-config.yaml     Model routing + OOM fallback chain + drop_params
-│   └── grafana/dashboards/
-│       ├── finagent-flow.json      Query → graph → vector → LLM (Tempo + Loki)
-│       ├── finagent-retrieval.json HRT: entity resolution, latency, circuit breakers
-│       └── finagent-evals.json     RAGAS scores + hallucination rate trend
-│
-├── requirements.txt
-├── requirements-eval.txt       RAGAS, langchain-openai, datasets (eval container only)
-└── scripts/                    Operational scripts
-    ├── setup.sh                First-time setup (all steps)
-    ├── start.sh                Regular full-stack startup
-    ├── stop.sh                 Stop services (with --reset, --chat, --api modes)
-    ├── start-chat.sh           Chat UI only (no compliance tools)
-    ├── start-api.sh            API + backend (no chat UI)
-    ├── start-infra.sh          Data stores + Ollama only
-    ├── pull-models.sh          Pull Ollama models
-    ├── ingest-sanctions.sh     Sanctions pipeline
-    ├── ingest-docs.sh          Document pipeline
-    └── ingest-all.sh           Both pipelines in sequence
+└── resources/grafana/dashboards/
+    ├── finagent-overview.json    datasource uid hardcoded to "prometheus"
+    ├── finagent-flow.json        datasource uid hardcoded (prometheus/loki/tempo)
+    ├── finagent-retrieval.json   datasource uid hardcoded (prometheus/loki)
+    └── finagent-evals.json       datasource uid hardcoded (prometheus/loki)
 ```
 
 ---
 
 ## Key Design Decisions
 
-**No LangChain.** The agent is built on Pydantic-AI with a plain OpenAI-compatible client. Tool calls are typed Python functions.
+**Graph-first retrieval, not vector-first.**
+Vector search alone cannot discover that a query about "Elon Musk" should also
+return documents about Tesla, SpaceX, and xAI. The graph expansion step runs
+before vector search so the filter set is semantically complete.
 
-**LiteLLM as the only LLM boundary.** Swapping models (local ↔ cloud) requires only a change in `litellm-config.yaml`, not application code. `drop_params: true` in `litellm_settings` silently drops unsupported parameters (e.g. `encoding_format: base64`) so Ollama-backed models receive only what they understand.
+**Entity profiles as synthetic documents.**
+Profile documents (generated from graph data) are stored in OpenSearch alongside
+source chunks. This means the LLM can answer "Tell me about X" even before any
+filed document explicitly names X's connections.
 
-**FalkorDB instead of redis-stack.** Redis removed RedisGraph from `redis-stack:latest` in version 7.2. FalkorDB is the actively-maintained community fork; `GRAPH.QUERY` commands are drop-in compatible.
+**Apostrophe-safe Cypher.**
+Entity names like "Oleg Deripaska's" used to break `GRAPH.QUERY` with a syntax
+error. `_exact_lookup()` now escapes `\` and `'` before interpolation.
 
-**nmslib engine for KNN.** OpenSearch's FAISS engine does not support `cosine` as a space type. The index uses `nmslib` with `cosinesimil` which is semantically equivalent.
+**Agent loop prevention.**
+`expand_entity` previously returned `"[]"` on a graph miss, causing the LLM to
+retry indefinitely. It now returns an explicit stop message. A `request_limit=8`
+cap via `UsageLimits` provides a hard safety net.
 
-**Idempotent ingestion.** Redis sets track ingested document IDs per source. Re-running the worker skips already-processed documents and only indexes new ones.
+**Per-IP rate limiting.**
+`slowapi` enforces 10 req/min on `/chat` and 60 req/min on `/search`. The shared
+`Limiter` singleton in `limiter.py` avoids import cycles between routers.
 
-**Graph-scoped vector search.** When an entity is resolved from the query, retrieval filters the KNN search to chunks already linked to that entity or its 2-hop neighbors — substantially reducing noise versus unfiltered semantic search.
+**Hardcoded Grafana datasource UIDs.**
+Grafana 13 fails to resolve datasource template variables that lack `query`,
+`refresh`, and `hide` fields. All four dashboards now use hardcoded UIDs
+(`prometheus`, `loki`, `tempo`) matching the UIDs provisioned by `otel-lgtm`.
 
-**BM25+kNN hybrid replaces cosine-only ranking.** `search_hybrid()` treats kNN as the required `must` clause and adds `should` BM25 clauses on `title` (boost 2.0), `author` (0.6), and `jurisdiction` (1.5). Entity filter stays in `filter` context (no scoring impact). This allows metadata-aware ranking without sacrificing semantic recall.
+**Eval runner reads `FINAGENT_API_BASE`.**
+Inside Docker, `localhost:8000` refers to the eval container itself. The runner
+now defaults `--api` to the `FINAGENT_API_BASE` env var (set to
+`http://api:8000` by docker-compose), so no `--api` flag is needed.
 
-**Rich per-chunk metadata as scalar attributes.** Every chunk stores `source`, `title`, `author`, `jurisdiction`, `date`, `doc_length`, and `url` — set by each ingestion source before pipeline processing. These flow automatically through `chunk_text(metadata=…)` → `enricher.enrich()` → `_flush` into OpenSearch. No post-hoc enrichment step needed.
+**LiteLLM as the only LLM boundary.**
+All model calls — chat completions and embeddings — go through LiteLLM.
+Swapping from local Ollama to Claude or vice versa is a one-line env change.
 
-**OTel-first observability.** The `observability/` module initialises the OTel SDK once at startup; all services import from it. Sub-spans inside `retrieval.search` expose per-stage latency (`entity_resolve`, `graph_expand`, `embed`, `vector_search`) without instrumenting callers. Three Grafana dashboards are provisioned from `resources/grafana/dashboards/` on first start — no manual dashboard import required.
+**PydanticAI instead of LangChain.**
+The agent is ~60 lines. Tools are plain Python functions injected via
+`AgentDeps`. No chains, no memory objects, no LCEL.
 
-**Eval isolation via separate container.** RAGAS and its LangChain dependency are kept in `requirements-eval.txt` and `Dockerfile.eval` so the production API image stays lean. The eval runner calls the live `/chat` and `/search` endpoints over the Docker network, testing the real stack rather than mocked components.
+**OTel-first observability.**
+All services emit traces, metrics, and structured logs to `grafana/otel-lgtm`
+via the OTel SDK. Four pre-provisioned Grafana dashboards cover overview KPIs,
+the full request flow, retrieval quality, and eval scores — no manual setup.
+
+**Eval isolation via separate container.**
+RAGAS and its LangChain dependency are kept in `requirements-eval.txt` and
+`Dockerfile.eval` so the production API image stays lean. The eval runner calls
+the live `/chat` and `/search` endpoints over the Docker network, testing the
+real stack rather than mocked components.
