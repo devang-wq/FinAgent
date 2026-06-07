@@ -1,0 +1,58 @@
+model_list:
+
+  # ==========================================================================
+  # LOCAL (FREE) — Ollama
+  # ==========================================================================
+
+  # Primary: Qwen3-30B-A3B — MoE, 3B active params, score 63.7, Apache 2.0
+  # RTX 4060 8 GB: ~8 GB VRAM + ~22 GB RAM offload; fast inference due to MoE.
+  - model_name: qwen3-30b-a3b
+    litellm_params:
+      model: ollama/qwen3:30b-a3b
+      api_base: http://ollama:11434
+
+  # Fallback: Gemma-3-12B — fits fully in 8 GB VRAM at Q3_K_M, score 58.6
+  - model_name: gemma3-12b
+    litellm_params:
+      model: ollama/gemma3:12b
+      api_base: http://ollama:11434
+
+  # Embeddings: nomic-embed-text — local, 768-dim, no API key needed
+  - model_name: nomic-embed-text
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: http://ollama:11434
+
+  # ==========================================================================
+  # PAID / CLOUD — Anthropic (uncomment when ANTHROPIC_API_KEY is set)
+  # ==========================================================================
+
+  # - model_name: claude-haiku
+  #   litellm_params:
+  #     model: anthropic/claude-haiku-4-5-20251001
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+  # - model_name: claude-sonnet
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-6
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+
+# ==========================================================================
+# ROUTER
+# ==========================================================================
+router_settings:
+  fallbacks:
+    - qwen3-30b-a3b:
+        - gemma3-12b
+
+
+# ==========================================================================
+# GLOBAL
+# ==========================================================================
+litellm_settings:
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  set_verbose: false

@@ -1,0 +1,193 @@
+{
+  "title": "FinAgent — Evals",
+  "uid": "finagent-evals",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["finagent", "eval"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Faithfulness",
+      "description": "RAGAS: fraction of claims in the answer that are supported by retrieved context (1 = fully grounded)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 0.6  },
+              { "color": "green",  "value": 0.8  }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "finagent_eval_score{metric=\"faithfulness\"}",
+          "legendFormat": "faithfulness",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Answer Relevancy",
+      "description": "RAGAS: how relevant the answer is to the question (1 = fully relevant)",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 0.6  },
+              { "color": "green",  "value": 0.8  }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "finagent_eval_score{metric=\"answer_relevancy\"}",
+          "legendFormat": "answer_relevancy",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Context Precision",
+      "description": "RAGAS: fraction of retrieved context that is relevant to the question",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 0.5  },
+              { "color": "green",  "value": 0.75 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "finagent_eval_score{metric=\"context_precision\"}",
+          "legendFormat": "context_precision",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Hallucination Rate",
+      "description": "LLM-judge: fraction of responses with groundedness < 0.6 (lower is better)",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 0.1  },
+              { "color": "red",    "value": 0.3  }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "finagent_eval_score{metric=\"hallucination_rate\"}",
+          "legendFormat": "hallucination_rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "All Eval Scores Over Time",
+      "description": "Track faithfulness, relevancy, precision, recall and hallucination rate across eval runs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "min": 0, "max": 1 }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "min", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "finagent_eval_score",
+          "legendFormat": "{{metric}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "text",
+      "title": "How to run an eval",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 15 },
+      "options": {
+        "mode": "markdown",
+        "content": "## Running an evaluation\n\nFrom the project root with the API running:\n\n```bash\n# All test cases\npython -m eval.runner\n\n# Specific tag\npython -m eval.runner --tag sanctions\npython -m eval.runner --tag hallucination_trap\n\n# Against a different API host\npython -m eval.runner --api http://localhost:8000\n```\n\n**Metrics explained**\n\n| Metric | Source | Good range |\n|---|---|---|\n| Faithfulness | RAGAS | > 0.8 |\n| Answer Relevancy | RAGAS | > 0.8 |\n| Context Precision | RAGAS | > 0.7 |\n| Context Recall | RAGAS | > 0.7 |\n| Hallucination Rate | LLM-judge | < 0.1 |"
+      }
+    }
+  ]
+}
