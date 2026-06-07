@@ -43,13 +43,18 @@ All dashboards require Grafana running at <http://localhost:3100>. Anonymous acc
 | FinAgent — Retrieval Quality | <http://localhost:3100/d/finagent-retrieval> | Entity resolution rate, graph expansion, circuit breakers |
 | FinAgent — Evals | <http://localhost:3100/d/finagent-evals> | RAGAS scores, hallucination rate, eval trends |
 
-### Grafana Data Sources
+### OTel Ingest Endpoints (exposed on host)
 
-| Source | Type | Internal URL |
-| --- | --- | --- |
-| prometheus | Prometheus | `http://localhost:9090` (inside otel-lgtm) |
-| loki | Loki | `http://localhost:3100` (inside otel-lgtm) |
-| tempo | Tempo | `http://localhost:3200` (inside otel-lgtm) |
+These are the ports your services write telemetry to — not browser URLs.
+
+| Endpoint | Port | Protocol | Purpose |
+| --- | --- | --- | --- |
+| OTLP gRPC | `localhost:4317` | gRPC | Traces, metrics, logs from all Python services |
+| OTLP HTTP | `localhost:4318` | HTTP | Alternative OTLP endpoint |
+
+> Prometheus, Loki, and Tempo run **inside** the `otel-lgtm` container and are
+> not directly accessible from the host. Query them through the Grafana UI at
+> <http://localhost:3100> or via Grafana's data source proxy API.
 
 ---
 
