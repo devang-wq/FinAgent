@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     litellm_base_url: str = "http://litellm:4000/v1"
     litellm_api_key: str = "sk-placeholder"
 
-    primary_model: str = "qwen3-30b-a3b"
+    primary_model: str = "qwen3-8b"
     embedding_model: str = "nomic-embed-text"
     embedding_dimensions: int = 768       # nomic-embed-text=768, text-embedding-3-small=1536
 

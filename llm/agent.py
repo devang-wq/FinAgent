@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -45,7 +46,10 @@ agent = Agent(
         "Known sources: [SEC EDGAR], [CourtListener], [ICIJ Offshore Leaks], "
         "[USASpending], [GDELT News], [OpenSanctions]. "
         "Example: 'Acme Corp received a $2M fine for OFAC violations [SEC EDGAR]. "
-        "The company is connected to three sanctioned individuals [OpenSanctions].'"
+        "The company is connected to three sanctioned individuals [OpenSanctions].' "
+        "IMPORTANT: If a tool returns 'not found' or an empty result, do NOT call "
+        "the same tool again with the same or similar input. Move on and answer "
+        "with what you have, or use search_documents to find relevant information."
     ),
 )
 
@@ -108,7 +112,11 @@ def expand_entity(ctx: RunContext[AgentDeps], entity_name: str) -> str:
         if not entities:
             span.set_attribute("tool.output.resolved", False)
             _log.info("tool_call tool=expand_entity entity_name=%r resolved=False", entity_name)
-            return "[]"
+            return (
+                f"Entity '{entity_name}' not found in the graph. "
+                "Do not call this tool again with the same name. "
+                "Use search_documents instead to find relevant information."
+            )
         related = ctx.deps.graph.expand_entity(entities[0].id)
         span.set_attribute("tool.output.resolved", True)
         span.set_attribute("tool.output.entity_id", entities[0].id)
@@ -131,7 +139,10 @@ class ComplianceAgent:
         with tracer.start_as_current_span("llm.agent_run") as span:
             span.set_attribute("question.length", len(question))
             try:
-                result = await llm_breaker.call_async(agent.run, question, deps=self.deps)
+                result = await llm_breaker.call_async(
+                    agent.run, question, deps=self.deps,
+                    usage_limits=UsageLimits(request_limit=8),
+                )
                 llm_duration.record(time.time() - t0)
                 return result.data
             except Exception as exc:

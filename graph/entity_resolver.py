@@ -47,8 +47,9 @@ class EntityResolver:
     # ------------------------------------------------------------------
 
     def _exact_lookup(self, mention: str) -> Entity | None:
+        safe = mention.replace("\\", "\\\\").replace("'", "\\'")
         query = (
-            f"MATCH (e) WHERE toLower(e.name) = toLower('{mention}') "
+            f"MATCH (e) WHERE toLower(e.name) = toLower('{safe}') "
             "RETURN e.id, e.name LIMIT 1"
         )
         result = self.redis.execute_command("GRAPH.QUERY", self._graph, query)

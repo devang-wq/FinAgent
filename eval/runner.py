@@ -55,7 +55,7 @@ async def _chat(client: httpx.AsyncClient, api_base: str, question: str) -> str:
         resp = await client.post(
             f"{api_base}/chat",
             json={"message": question},
-            timeout=180.0,
+            timeout=360.0,
         )
         resp.raise_for_status()
         data = resp.json()
