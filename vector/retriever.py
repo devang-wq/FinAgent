@@ -61,12 +61,30 @@ class RetrievalService:
             # ── 4. Vector search (hybrid BM25+kNN when entities found) ───
             with tracer.start_as_current_span("retrieval.vector_search") as v_span:
                 if related_ids:
-                    docs = self.vector.search_hybrid(
+                    # Fetch entity profile docs first (deterministic, no kNN drift)
+                    profile_docs = self.vector.get_entity_profiles(
+                        [e.id for e in entities], k=len(entities) * 2
+                    )
+
+                    # Hybrid entity-filtered search for linked documents
+                    entity_docs = self.vector.search_hybrid(
                         entity_ids=related_ids,
                         embedding=embedding,
                         query_text=query,
                         k=limit,
                     )
+
+                    # Unrestricted kNN — catches procurement/news not linked to entities
+                    fallback_docs = self.vector.search(embedding, k=limit)
+
+                    # Merge: profile docs first, then entity-filtered, then fallback
+                    seen_ids: set[str] = set()
+                    docs: list = []
+                    for d in profile_docs + entity_docs + fallback_docs:
+                        if d.id not in seen_ids:
+                            seen_ids.add(d.id)
+                            docs.append(d)
+                    docs = docs[:limit]
                     v_span.set_attribute("retrieval.mode", "hybrid_entity_filtered")
                 else:
                     docs = self.vector.search(embedding, k=limit)

@@ -67,6 +67,29 @@ class OpenSearchRepository:
         }
         return self._hits(self.client.search(index=self.index, body=body))
 
+    def get_entity_profiles(
+        self,
+        entity_ids: list[str],
+        k: int = 5,
+    ) -> list[Document]:
+        """Fetch pre-indexed graph_profile documents for resolved entity IDs (no kNN).
+
+        Called by RetrievalService to surface rich entity context (datasets, PEP flag)
+        even when the hybrid kNN search misses the profile doc.
+        """
+        body = {
+            "size": k,
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"terms": {"entity_ids": entity_ids}},
+                        {"term": {"source": "graph_profile"}},
+                    ]
+                }
+            },
+        }
+        return self._hits(self.client.search(index=self.index, body=body))
+
     def search_hybrid(
         self,
         entity_ids: list[str],
