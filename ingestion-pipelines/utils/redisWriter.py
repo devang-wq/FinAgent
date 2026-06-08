@@ -11,39 +11,57 @@ class RedisWriter:
 
     _GRAPH = "entities"
 
+    # All fields emitted by sanctionsParser.parse_entity (schema-specific ones
+    # default to "" when absent so every batch row has a uniform shape).
+    _ENTITY_FIELDS = [
+        "id", "name", "schema", "datasets",
+        "topics", "aliases", "country",
+        # Person
+        "birthDate", "position", "passportNumber",
+        # Company / LegalEntity / Organization
+        "incorporationDate", "registrationNumber", "jurisdiction",
+        # Vessel (maritime sanctions)
+        "imoNumber", "mmsi", "flag", "vesselType", "callSign",
+        # Security (sanctioned securities)
+        "isin", "cusip", "ticker", "exchange",
+        # Sanction record
+        "program", "startDate", "endDate", "reason", "authority",
+        # Position (PEP)
+        "description",
+    ]
+
     def __init__(self, host: str, port: int):
         self.redis = Redis(host=host, port=port, decode_responses=True)
 
     # ------------------------------------------------------------------
-    # Public API (same signatures as before)
+    # Public API
     # ------------------------------------------------------------------
 
     def write_entities(self, entities: list[dict]) -> None:
         if not entities:
             return
-        # UNWIND lets us send a whole batch in one GRAPH.QUERY call.
-        # We serialise the list as a JSON literal so Cypher can parse it.
+
         payload = json.dumps(
             [
-                {
-                    "id": e.get("id", ""),
-                    "name": self._esc(str(e.get("name", ""))),
-                    "schema": self._esc(str(e.get("schema", ""))),
-                    "datasets": self._esc(str(e.get("datasets", ""))),
-                }
+                {field: self._esc(str(e.get(field, ""))) for field in self._ENTITY_FIELDS}
                 for e in entities
             ]
+        )
+
+        set_clause = ", ".join(
+            f"e.{f} = row.{f}"
+            for f in self._ENTITY_FIELDS
+            if f != "id"
         )
         query = (
             f"WITH {payload} AS rows "
             "UNWIND rows AS row "
             "MERGE (e:Entity {id: row.id}) "
-            "SET e.name = row.name, e.schema = row.schema, e.datasets = row.datasets"
+            f"SET {set_clause}"
         )
         try:
             self.redis.execute_command("GRAPH.QUERY", self._GRAPH, query)
-        except Exception as exc:
-            # Individual-row fallback so one bad record doesn't lose the batch.
+        except Exception:
             for e in entities:
                 self._upsert_entity(e)
 
@@ -61,13 +79,13 @@ class RedisWriter:
 
     def _upsert_entity(self, e: dict) -> None:
         eid = self._esc(str(e.get("id", "")))
-        name = self._esc(str(e.get("name", "")))
-        schema = self._esc(str(e.get("schema", "")))
-        datasets = self._esc(str(e.get("datasets", "")))
-        query = (
-            f"MERGE (e:Entity {{id: '{eid}'}}) "
-            f"SET e.name = '{name}', e.schema = '{schema}', e.datasets = '{datasets}'"
+        set_parts = ", ".join(
+            f"e.{f} = '{self._esc(str(e.get(f, \"\")))}"
+            + "'"
+            for f in self._ENTITY_FIELDS
+            if f != "id"
         )
+        query = f"MERGE (e:Entity {{id: '{eid}'}}) SET {set_parts}"
         try:
             self.redis.execute_command("GRAPH.QUERY", self._GRAPH, query)
         except Exception:

@@ -90,6 +90,30 @@ class OpenSearchRepository:
         }
         return self._hits(self.client.search(index=self.index, body=body))
 
+    def search_by_entity_names(
+        self,
+        entity_names: list[str],
+        k: int = 5,
+    ) -> list[Document]:
+        """BM25 text search on entity_names field for names GLiNER extracted
+        but could not map to a graph ID. Supplements kNN fallback."""
+        body = {
+            "size": k,
+            "query": {
+                "bool": {
+                    "filter": [{"term": {"source": "graph_profile"}}],
+                    "must": [{
+                        "multi_match": {
+                            "query": " ".join(entity_names),
+                            "fields": ["entity_names", "text"],
+                            "type": "best_fields",
+                        }
+                    }],
+                }
+            },
+        }
+        return self._hits(self.client.search(index=self.index, body=body))
+
     def search_hybrid(
         self,
         entity_ids: list[str],

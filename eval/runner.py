@@ -134,9 +134,11 @@ async def run_eval(tag_filter: str | None = None, api_base: str = "http://localh
         embed_model=settings.embedding_model,
     )
 
-    # ── Hallucination rate: fraction of cases with groundedness < 0.6 ─────
+    # ── Hallucination rate: fraction of cases with groundedness < 0.5 ─────
+    # 0.50 = "correctly admits limitation" — not a hallucination.
+    # Only 0.00 (fabricated) and 0.30 (ignores/contradicts context) count.
     hallucination_rate = sum(
-        1 for r in results if r["groundedness"] < 0.6
+        1 for r in results if r["groundedness"] < 0.5
     ) / len(results)
 
     # ── Publish scores ────────────────────────────────────────────────────

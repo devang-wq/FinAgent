@@ -87,7 +87,7 @@ class IngestionPipeline:
                     "title": doc.get("title", ""),
                     "author": doc.get("author", ""),
                     "jurisdiction": doc.get("jurisdiction", ""),
-                    "date": doc.get("date", datetime.utcnow().strftime("%Y-%m-%d")),
+                    "date": doc.get("date") or datetime.utcnow().strftime("%Y-%m-%d"),
                     "doc_length": len(doc.get("text", "")),
                     "url": doc.get("url", ""),
                 },
@@ -155,9 +155,25 @@ class IngestionPipeline:
             async def _do_bulk():
                 return await loop.run_in_executor(None, lambda: self.os.bulk(body=_body))
 
-            await opensearch_breaker.call_async(_do_bulk)
+            resp = await opensearch_breaker.call_async(_do_bulk)
 
-        return len(embedded)
+        if resp and resp.get("errors"):
+            failed = [
+                item["index"]
+                for item in resp.get("items", [])
+                if item.get("index", {}).get("status", 200) >= 400
+            ]
+            if failed:
+                _log.warning(
+                    "bulk index had %d failures (of %d): first=%s",
+                    len(failed), len(embedded), failed[0].get("error", {}).get("reason", "?")
+                )
+
+        indexed = sum(
+            1 for item in (resp.get("items", []) if resp else [])
+            if item.get("index", {}).get("status", 0) < 400
+        ) if resp else len(embedded)
+        return indexed
 
     def _is_done(self, source: str, doc_id: str) -> bool:
         return bool(self.redis.sismember(f"{_CHECKPOINT_KEY}:{source}", doc_id))
