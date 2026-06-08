@@ -32,7 +32,7 @@ _log = logging.getLogger(__name__)
 
 
 async def _search(client: httpx.AsyncClient, api_base: str, question: str) -> list[str]:
-    """Return retrieved context texts.  Empty list on any failure."""
+    """Return retrieved context texts from both document and entity results."""
     try:
         resp = await client.post(
             f"{api_base}/search",
@@ -41,9 +41,27 @@ async def _search(client: httpx.AsyncClient, api_base: str, question: str) -> li
         )
         resp.raise_for_status()
         data = resp.json()
-        # Tolerate both {"documents": [...]} and list responses
+        texts: list[str] = []
+
+        # Vector-search document results
         docs = data.get("documents", data) if isinstance(data, dict) else data
-        return [d.get("text", d.get("content", "")) for d in docs if isinstance(d, dict)]
+        texts.extend(d.get("text", d.get("content", "")) for d in docs if isinstance(d, dict))
+
+        # Graph entity results — format into the same text structure used in the index
+        for ent in (data.get("entities", []) if isinstance(data, dict) else []):
+            if not isinstance(ent, dict) or not ent.get("name"):
+                continue
+            datasets = ent.get("datasets") or []
+            pep_flag = ent.get("pep_sanctions_flag") or ent.get("is_pep_or_sanctioned") or "UNKNOWN"
+            schema = ent.get("schema_type") or ent.get("type") or ""
+            texts.append(
+                f"Entity: {ent['name']}\n"
+                f"Type: {schema}\n"
+                f"Datasets: {','.join(str(d) for d in datasets)}\n"
+                f"PEP/Sanctions flag: {pep_flag}"
+            )
+
+        return [t for t in texts if t and t.strip()]
     except Exception as exc:
         _log.warning("search failed for %r: %s", question[:60], exc)
         return []

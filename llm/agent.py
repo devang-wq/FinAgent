@@ -48,9 +48,11 @@ agent = Agent(
         "[USASpending], [GDELT News], [OpenSanctions]. "
         "Example: 'Acme Corp received a $2M fine for OFAC violations [SEC EDGAR]. "
         "The company is connected to three sanctioned individuals [OpenSanctions].' "
-        "IMPORTANT: If a tool returns 'not found' or an empty result, do NOT call "
-        "the same tool again with the same or similar input. Move on and answer "
-        "with what you have, or use search_documents to find relevant information."
+        "IMPORTANT: If expand_entity or get_entity returns 'not found', ALWAYS "
+        "follow up with search_documents using the same name before concluding "
+        "the entity does not exist — the search index may have data even when "
+        "the graph lookup fails. Only say 'not found' after search_documents "
+        "also returns no relevant results."
     ),
 )
 
