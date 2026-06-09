@@ -114,5 +114,5 @@ _meter.create_observable_gauge(
     "finagent.eval.score",
     callbacks=[_observe_eval],
     description="Latest RAGAS / LLM-judge eval scores (1 = best, 0 = worst)",
-    unit="",
+    unit="1",
 )

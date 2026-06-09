@@ -25,16 +25,16 @@ def report_scores(ragas_scores: dict[str, float], hallucination_rate: float) -> 
         set_eval_score("hallucination_rate", hallucination_rate)
         _log.info("eval.hallucination_rate = %.3f", hallucination_rate)
 
-        # Force an immediate metric export before the process exits.
-        # The PeriodicExportingMetricReader fires every 15s; without a flush
-        # the observable gauge values are lost when the short-lived container exits.
+        # shutdown() guarantees a final collection cycle (triggers observable gauge
+        # callbacks) + export before the short-lived process exits.
+        # force_flush alone does not reliably trigger callbacks.
         from opentelemetry import metrics as otel_metrics, trace
         mp = otel_metrics.get_meter_provider()
-        if hasattr(mp, "force_flush"):
-            mp.force_flush(timeout_millis=10_000)
+        if hasattr(mp, "shutdown"):
+            mp.shutdown()
         tp = trace.get_tracer_provider()
-        if hasattr(tp, "force_flush"):
-            tp.force_flush(timeout_millis=5_000)
+        if hasattr(tp, "shutdown"):
+            tp.shutdown()
 
     except Exception as exc:
         _log.error("Failed to publish eval scores: %s", exc)
